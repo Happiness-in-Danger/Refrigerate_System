@@ -1,0 +1,10 @@
+{
+    "Kp": 0.6,
+    "Ki": 0.12,
+    "Kd": 3,
+    "setpiont": 5.0,
+    "error_threshold":2.0,
+    "deadband":0.2,
+    "max_delta":8.0,
+    "aggr_mode":"togoal"
+}
