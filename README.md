@@ -3,7 +3,7 @@
 
 The open source refrigeration (heat pump) system
 
-In this project, I will use STM32 + Micropython(maybe need Raspberry PICO) to design.Because I am not an all-round talent. Some work will be done by AI. Thanks to ChatGPT(/smile)
+In this project, I will use STM32 + Micropython(maybe need Raspberry PICO) to design. Because I am not an all-round talent. Some work will be done by AI. Thanks to ChatGPT(/smile)
 
 **All codes & Refrigeration designs will be open source!**
 
