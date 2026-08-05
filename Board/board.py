@@ -1,7 +1,17 @@
 from HAL.SPI import SPIBus,SPIDev
+from HAL.ADC_sample import SmoothedADC
 from Sensor.AD7124_PT100 import AD7124
-from pyb import UART
+from pyb import UART,ADC, Pin
 import adc_direct
+
+# 引脚分配（GPIO）
+#    TIM1   DShot600
+#         PE9, PE11, PE13, PE14
+#    膨胀阀  
+#         
+#    电流传感器
+
+
 
 #RTD
 AD7124_spi = SPIBus(1,500_000,1,1)
@@ -25,6 +35,10 @@ REGS = (
 
 
 #ADC
-    #Presser
-adc_direct.read_pc2_c()
-adc_direct.read_pc3_c()
+#Presser
+adc_pc2c = SmoothedADC(adc_direct.read_pc2_c, window=16)
+adc_pc3c = SmoothedADC(adc_direct.read_pc3_c, window=16)
+#current
+adc_current = ADC(Pin('PA4'))
+#backup
+adc_backup = ADC(Pin('PA5'))

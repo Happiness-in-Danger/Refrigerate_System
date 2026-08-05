@@ -46,7 +46,6 @@ class TMC2209:
                  step_pin: str,
                  dir_pin: str,
                  en_pin: str,
-                 diag_pin: str,
                  addr: int = 0,
                  r_sense: float = 0.11,       # 采样电阻 Ω，常见0.11
                  default_current: int = 250,   # 运行电流 mA（DPF TS1规格260mA）
