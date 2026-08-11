@@ -84,7 +84,7 @@ class IncrementalController:
         # 2) S_derivative
         raw_ddx = (self.dx_filtered - self.prev_dx_filtered) / self.dt
         beta2 = (1.5*self.tau / (1.5*self.tau + self.dt))
-        self.ddx_filtered = beta2 * self.ddx_filtered + (1.0 - beta) * raw_ddx
+        self.ddx_filtered = beta2 * self.ddx_filtered + (1.0 - beta2) * raw_ddx
         self.prev_dx_filtered = self.dx_filtered
 
         # 2) integral update
