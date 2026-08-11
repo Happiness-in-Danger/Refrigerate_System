@@ -10,12 +10,17 @@
 class RegisterMap:
     def __init__(self):
         # ---- 输入寄存器 (只读, 功能码04) ----
-        # 地址 0-8 对应 sensor_data[0..8]:
-        #   0 suction_temp  1 discharge_temp  2 inlet_temp  3 outlet_temp
-        #   4 liquid_temp   5 suction_psi     6 discharge_psi
-        #   7 superheat(SH) 8 E value
-        # 地址 9-15 预留
-        self.input_regs = [0] * 16
+        # 0-9   sensor_data[0..9] *100 (含电流)
+        # 10-15 预留
+        # 16    error_reg
+        # 17    sensor_fault_reg
+        # 18    valve_pos*100        (state.state_data[ST_VALVE_POS])
+        # 19    valve_pos_steps      (state.state_data[ST_VALVE_POS_STEPS])
+        # 20    evap_fan_rpm         (state.state_data[ST_EVAP_FAN_RPM])
+        # 21    cond_fan_rpm         (state.state_data[ST_COND_FAN_RPM])
+        # 22    motor_speed          (state.state_data[ST_MOTOR_SPEED])
+        # 23-31 预留
+        self.input_regs = [0] * 32
 
         # ---- 离散量输入 (只读, 功能码02) ----
         # 地址 0-15 对应 Error_point[0..15] 报警位
