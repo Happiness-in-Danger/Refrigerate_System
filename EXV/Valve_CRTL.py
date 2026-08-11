@@ -87,7 +87,6 @@ async def pid_loop():
         sh = state.sensor_data[7]
         if sh == 999:
             print("[PID] 传感器故障，跳过本次计算")
-            state.error_point[1] = 1
         else:
             delta = _exv_ctrl.update(sh)
             pending_delta += delta
@@ -125,14 +124,14 @@ async def valve_loop():
             pct = exv.get_position_pct()
 
             # 同步到共享状态
-            state.global_state['valve_pos'] = pct
+            state.state_data[state.ST_VALVE_POS] = pct
 
             print("[Valve] 完成 | pos=%d/500步 pct=%.1f%% | 队列剩余=%+.2f" % (
                   pos, pct, pending_delta))
 
             if not ok:
                 print("[Valve] 驱动器故障")
-                state.error_point[0] = 1
+                state.set_fault('EXV_FAULT')
         else:
             await asyncio.sleep_ms(100)
 
@@ -149,7 +148,7 @@ async def run():
     ok = await exv.homing()
     if not ok:
         print("[EXV] 归零失败")
-        state.error_point[0] = 1
+        state.set_fault('EXV_FAULT')
         return
 
     await asyncio.gather(
