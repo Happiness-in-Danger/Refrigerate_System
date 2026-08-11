@@ -1,7 +1,7 @@
 #组态屏 VTc070C334A
 import time
 from Board import board
-from Sensor.read_sensors import reads
+import Board.state as state
 
 uart = board.LCD_Uart
 addre = board.REGS #(address,dtype)
@@ -39,7 +39,6 @@ def uart_read(data, address):
     return data
 # ------------------ run ------------------
 def desplay():
-    data_w = reads()
-    uart_write(data,addre)
-    time.sleep(0.5)
-    data_r
+    data_w = state.sensor_data
+    uart_write(data_w,addre)
+    # data_r

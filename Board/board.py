@@ -8,7 +8,8 @@ import adc_direct
 #    TIM1   DShot600
 #         PE9, PE11, PE13, PE14
 #    膨胀阀  
-#         
+#         PE7, PE8  UART7  TX  RX
+#         PD13, PE10, PE12  STEP   Dir   EN   
 #    电流传感器
 
 
