@@ -1,10 +1,12 @@
 {
     "Kp": 0.6,
     "Ki": 0.12,
-    "Kd": 3,
+    "Kd": 3.0,
     "setpoint": 5.0,
-    "error_threshold":2.0,
-    "deadband":0.2,
-    "max_delta":8.0,
-    "aggr_mode":"togoal"
+    "error_threshold": 2.0,
+    "deadband": 0.2,
+    "max_delta": 8.0,
+    "aggr_mode": "togoal",
+    "tau": 3.0,
+    "T_goal": 5.0
 }

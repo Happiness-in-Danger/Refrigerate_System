@@ -76,9 +76,9 @@ async def Log():
                 f.write(f"{time.time()},{global_state['sensor_value']},{global_state['motor_speed']},{global_state['valve_pos']}\n")
         except:
             print("[Log] File write error")
-        
-        exv_ctrl.save_parameters('config.json')
-        await asyncio.sleep(5)  # 每5秒写一次文件
+
+        state.save_control_params('config.json')   # 换掉不存在的 exv_ctrl.save_parameters
+        await asyncio.sleep(5000)
 
 # ------------------------
 # main
