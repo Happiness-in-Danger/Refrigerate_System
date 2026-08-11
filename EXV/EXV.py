@@ -123,7 +123,11 @@ def check_health() -> bool:
     """
     if not _motor.check_driver():
         print("[EXV] 驱动器故障（通信失败或保护触发）")
+        state.state_data[state.ST_VALVE_FAULT] = 1
+        state.set_fault('EXV_FAULT')
         return False
+    state.state_data[state.ST_VALVE_FAULT] = 0
+    state.clear_fault('EXV_FAULT')
     return True
 
 # ════════════════════════════════════════════════════════════
@@ -132,8 +136,8 @@ def check_health() -> bool:
 
 def _sync_state():
     """把当前开度同步进全局共享状态，供 Display / Modbus 等模块只读查询"""
-    state.global_state['valve_pos_steps'] = _position
-    state.global_state['valve_pos'] = get_position_pct()
+    state.state_data[state.ST_VALVE_POS_STEPS] = _position
+    state.state_data[state.ST_VALVE_POS] = get_position_pct()
 
 # ════════════════════════════════════════════════════════════
 # 归零（上电必须先调用）
