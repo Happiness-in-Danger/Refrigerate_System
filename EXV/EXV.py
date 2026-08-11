@@ -1,7 +1,7 @@
-from pyb import Pin, Timer
-from HAL.PWM import PWM
-import time
-import uasyncio as asyncio
+# from pyb import Pin, Timer
+# from HAL.PWM import PWM
+# import time
+# import uasyncio as asyncio
 """ # pwm0=PWM(Pin(5), freq=1000, duty_u16=32768)
 # Pwm0 = Timer(4,freq=40)
 # Ch1=Pwm0.channel(1,Timer.PWM,pin=Pin("PB6"),pulse_width_percent=50)
@@ -67,6 +67,7 @@ async def async_run1(steps, freq, dir,ena,pin,time_nom,ch):
 
 from EXV.TMC2209 import TMC2209
 import uasyncio as asyncio
+import Board.state as state
 
 # ─── 方向常量 ────────────────────────────────────────────────
 DIR_OPEN  = 1
@@ -79,9 +80,9 @@ STEPS_PER_PCT = FULL_STROKE / 100  # 5步 = 1%
 # ─── 驱动器实例 ──────────────────────────────────────────────
 _motor = TMC2209(
     uart_id         = 2,
-    step_pin        = "PC13",
-    dir_pin         = "PC14",
-    en_pin          = "PC15",
+    step_pin        = "PD13",
+    dir_pin         = "PE10",
+    en_pin          = "PE12",
     addr            = 0,
     r_sense         = 0.11,
     default_current = 250,
@@ -125,6 +126,14 @@ def check_health() -> bool:
         return False
     return True
 
+# ════════════════════════════════════════════════════════════
+# 同步
+# ════════════════════════════════════════════════════════════
+
+def _sync_state():
+    """把当前开度同步进全局共享状态，供 Display / Modbus 等模块只读查询"""
+    state.global_state['valve_pos_steps'] = _position
+    state.global_state['valve_pos'] = get_position_pct()
 
 # ════════════════════════════════════════════════════════════
 # 归零（上电必须先调用）
@@ -143,6 +152,7 @@ async def homing() -> bool:
     if ok:
         _position = 0
         _move_count = 0
+        _sync_state()
         print("[EXV] homing OK, position = 0 (全关)")
     return ok
 
@@ -164,6 +174,7 @@ async def open_steps(steps: int, freq: int = 40,
     if ok:
         _position = min(FULL_STROKE, _position + steps)
         _move_count += 1
+        _sync_state()
     return ok
 
 async def close_steps(steps: int, freq: int = 40,
@@ -179,6 +190,7 @@ async def close_steps(steps: int, freq: int = 40,
     if ok:
         _position = max(0, _position - steps)
         _move_count += 1
+        _sync_state()
     return ok
 
 
@@ -240,5 +252,5 @@ async def full_close() -> bool:
 
 
 #线圈
-# 红    橙    灰    蓝    黑    黄
+# 红    橙    黑    黄    灰    蓝
 # A+    B+    A-    B-   COM   COM    

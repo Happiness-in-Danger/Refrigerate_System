@@ -100,6 +100,7 @@ class TMC2209:
     #     self._running = False
     #     self.disable()
 
+    # ─── UART工具 ─────────────────────────────────────────────
     def _flush_rx(self):
         time.sleep_ms(2)
         while self.uart.any():
@@ -297,7 +298,7 @@ class TMC2209:
     #     self.disable()
     #     return True
 
-    # ─── 归零（关阀到底，StallGuard触发即到位）───────────────
+    # ─── 归零（关阀到底）───────────────
     async def homing(self) -> bool:
         self.dir.value(0)
  
