@@ -8,18 +8,13 @@ from HAL.PID_Plus import IncrementalController
 import EXV.Valve_CRTL as exv_ctrl
 from HAL.ADC_sample import SmoothedADC
 from Display_Touch.Desplay import desplay
-import Board.state as state
 from Sensor.read_sensors import reads
 
 # ------------------------
 # 全局变量区
 # ------------------------
-global_state = {
-    'motor_speed': 0,
-    'valve_pos': 0,
-    'sensor_value': 0,
-    'sensor_fault': False,
-}
+
+import Board.state as state
 
 # ------------------------
 # Model A：Ctrl compressor speed
