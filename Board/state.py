@@ -92,7 +92,29 @@ control_params = {
     "setpoint": 5.0, "error_threshold": 2.0,
     "deadband": 0.2, "max_delta": 8.0,
     "aggr_mode": "togoal",
+    "tau": 3.0, "T_goal": 5.0, 
 }
+def load_control_params(path="config.json"):
+    """开机调用：用config.json覆盖默认值，缺的key保留默认值不报错"""
+    try:
+        import json
+        with open(path, "r") as f:
+            saved = json.load(f)
+        control_params.update({k: v for k, v in saved.items() if k in control_params})
+    except Exception as e:
+        print("[state] config加载失败，使用默认参数:", e)
+    return control_params
+
+def save_control_params(path="config.json"):
+    """把当前control_params落盘"""
+    try:
+        import json
+        with open(path, "w") as f:
+            json.dump(control_params, f)
+        return True
+    except Exception as e:
+        print("[state] config保存失败:", e)
+        return False
 
 # ────────────────────────────────────────────────────────────
 # 系统级故障寄存器 —— 16位, 对应 Modbus 离散输入 1x, 地址 0~15, FC02
