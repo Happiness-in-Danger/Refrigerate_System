@@ -25,10 +25,10 @@ import uasyncio as asyncio
 from pyb import UART, Pin
 from Display_Touch.modbus_regs import regs
 import Board.state as state
+import Board.board as board
 
 # ─── 配置区（按现场实际情况改）───────────────────────────────
 SLAVE_ADDR = 1
-BAUDRATE   = 9600
 DE_PIN     = None   # 转接板自动流控，不需要MCU控方向
 
 FC_READ_DISCRETE  = 0x02
@@ -52,8 +52,7 @@ def _silence_ms(baud):
     return max(2, int(t_char_ms * 3.5) + 1)
 
 
-_uart = UART(8, BAUDRATE, bits=8, parity=None, stop=1,
-             timeout=2, timeout_char=_silence_ms(BAUDRATE), read_buf_len=256)
+_uart = board.ModeBus_Screen
 
 _de = Pin(DE_PIN, Pin.OUT, value=0) if DE_PIN else None
 
@@ -155,20 +154,50 @@ def _handle_write_multiple(addr, fc, req):
 def _apply_holding_writes(start, qty):
     touched = range(start, start + qty)
     cp = state.control_params
-    if 0 in touched: cp['Kp']              = regs.holding_regs[0] / 100
-    if 1 in touched: cp['Ki']              = regs.holding_regs[1] / 100
-    if 2 in touched: cp['Kd']              = regs.holding_regs[2] / 100
-    if 3 in touched: cp['setpoint']        = regs.holding_regs[3] / 100
-    if 4 in touched: cp['deadband']        = regs.holding_regs[4] / 100
-    if 5 in touched: cp['max_delta']       = regs.holding_regs[5] / 100
-    if 6 in touched: cp['error_threshold'] = regs.holding_regs[6] / 100
-    if 7 in touched:
-        mode = _AGGR_MODE_FROM_INT.get(regs.holding_regs[7])
+    if 0  in touched: cp['Kp']              = regs.holding_regs[0]  / 100
+    if 1  in touched: cp['Ki']              = regs.holding_regs[1]  / 100
+    if 2  in touched: cp['Kd']              = regs.holding_regs[2]  / 100
+    if 3  in touched: cp['setpoint']        = regs.holding_regs[3]  / 100
+    if 4  in touched: cp['deadband']        = regs.holding_regs[4]  / 100
+    if 5  in touched: cp['max_delta']       = regs.holding_regs[5]  / 100
+    if 6  in touched: cp['error_threshold'] = regs.holding_regs[6]  / 100
+    if 7  in touched: cp['T_goal']          = regs.holding_regs[7]  / 100
+    if 11 in touched:
+        mode = _AGGR_MODE_FROM_INT.get(regs.holding_regs[11])
         if mode is not None:
             cp['aggr_mode'] = mode
-    # 注：目前没有任何协程把 control_params 的新值应用回运行中的 PID 控制器实例，
-    # 这里只是把写入值同步进 state.control_params，实际生效还需要你在 main.py
-    # 里加一个周期性协程，把 control_params 写回 ctrl_exv.Kp/Ki/Kd/...
+    if 12 in touched: cp['tau']             = regs.holding_regs[12] / 100
+    # 系统启动开关
+    if 13 in touched:
+        state.state_data[state.ST_SYSTEM_ENABLE] = 1 if regs.holding_regs[13] else 0
+
+    # 压缩机PID
+    if 14 in touched: ccp['Kp']              = regs.holding_regs[14] / 100
+    if 15 in touched: ccp['Ki']              = regs.holding_regs[15] / 100
+    if 16 in touched: ccp['Kd']              = regs.holding_regs[16] / 100
+    if 17 in touched: ccp['setpoint']        = regs.holding_regs[17] / 100
+    if 18 in touched: ccp['deadband']        = regs.holding_regs[18] / 100
+    if 19 in touched: ccp['max_delta']       = regs.holding_regs[19] / 100
+    if 20 in touched: ccp['error_threshold'] = regs.holding_regs[20] / 100
+    if 21 in touched: ccp['T_goal']          = regs.holding_regs[21] / 100
+    if 22 in touched:
+        mode = _AGGR_MODE_FROM_INT.get(regs.holding_regs[22])
+        if mode is not None:
+            ccp['aggr_mode'] = mode
+    if 23 in touched: ccp['tau']             = regs.holding_regs[23] / 100
+
+    # 风机转速指令（原值 r/min，不定点化）
+    if 24 in touched: state.state_data[state.ST_EVAP_FAN_SPEED_CMD] = regs.holding_regs[24]
+    if 25 in touched: state.state_data[state.ST_COND_FAN_SPEED_CMD] = regs.holding_regs[25]
+
+    # 转速限幅（原值 r/min）
+    if 26 in touched: state.state_data[state.ST_MOTOR_SPEED_MIN] = regs.holding_regs[26]
+    if 27 in touched: state.state_data[state.ST_MOTOR_SPEED_MAX] = regs.holding_regs[27]
+    if 28 in touched: state.state_data[state.ST_FAN_SPEED_MIN]   = regs.holding_regs[28]
+    if 29 in touched: state.state_data[state.ST_FAN_SPEED_MAX]   = regs.holding_regs[29]
+
+    # 注：control_params / compressor_control_params 写入后，仍不会自动同步回
+    # 运行中的 ctrl_exv / 未来的压缩机PID控制器实例，这个之前已记录，待后续处理。
 
 
 # ─── 收帧（按T3.5静默切帧）───────────────────────────────────
@@ -255,21 +284,49 @@ def sync_input_regs():
     ir[21] = st[state.ST_COND_FAN_RPM]                 # rpm，原值
     ir[22] = st[state.ST_MOTOR_SPEED]                  # rpm，原值
 
-    # 23-31 预留，不动
+    # 23-26: 分项故障标志位（0/1），单独暴露给上位机，跟 error_reg 汇总位互补
+    ir[23] = st[state.ST_VALVE_FAULT]
+    ir[24] = st[state.ST_EVAP_FAN_FAULT]
+    ir[25] = st[state.ST_COND_FAN_FAULT]
+    ir[26] = st[state.ST_SENSOR_FAULT]
+
+    # 27-31 预留，不动
 
 
 def sync_holding_readback():
     """把当前生效的 control_params 写回 holding_regs，供上位机只读展示/核对"""
     cp = state.control_params
     hr = regs.holding_regs
-    hr[0] = int(round(cp['Kp'] * 100))
-    hr[1] = int(round(cp['Ki'] * 100))
-    hr[2] = int(round(cp['Kd'] * 100))
-    hr[3] = int(round(cp['setpoint'] * 100))
-    hr[4] = int(round(cp['deadband'] * 100))
-    hr[5] = int(round(cp['max_delta'] * 100))
-    hr[6] = int(round(cp['error_threshold'] * 100))
-    hr[7] = _AGGR_MODE_TO_INT.get(cp['aggr_mode'], 0)
+    hr[0]  = int(round(cp['Kp'] * 100))
+    hr[1]  = int(round(cp['Ki'] * 100))
+    hr[2]  = int(round(cp['Kd'] * 100))
+    hr[3]  = int(round(cp['setpoint'] * 100))
+    hr[4]  = int(round(cp['deadband'] * 100))
+    hr[5]  = int(round(cp['max_delta'] * 100))
+    hr[6]  = int(round(cp['error_threshold'] * 100))
+    hr[7]  = int(round(cp['T_goal'] * 100))
+    hr[11] = _AGGR_MODE_TO_INT.get(cp['aggr_mode'], 0)
+    hr[12] = int(round(cp['tau'] * 100))
+
+    hr[13] = state.state_data[state.ST_SYSTEM_ENABLE]
+
+    hr[14] = int(round(ccp['Kp'] * 100))
+    hr[15] = int(round(ccp['Ki'] * 100))
+    hr[16] = int(round(ccp['Kd'] * 100))
+    hr[17] = int(round(ccp['setpoint'] * 100))
+    hr[18] = int(round(ccp['deadband'] * 100))
+    hr[19] = int(round(ccp['max_delta'] * 100))
+    hr[20] = int(round(ccp['error_threshold'] * 100))
+    hr[21] = int(round(ccp['T_goal'] * 100))
+    hr[22] = _AGGR_MODE_TO_INT.get(ccp['aggr_mode'], 0)
+    hr[23] = int(round(ccp['tau'] * 100))
+
+    hr[24] = state.state_data[state.ST_EVAP_FAN_SPEED_CMD]
+    hr[25] = state.state_data[state.ST_COND_FAN_SPEED_CMD]
+    hr[26] = state.state_data[state.ST_MOTOR_SPEED_MIN]
+    hr[27] = state.state_data[state.ST_MOTOR_SPEED_MAX]
+    hr[28] = state.state_data[state.ST_FAN_SPEED_MIN]
+    hr[29] = state.state_data[state.ST_FAN_SPEED_MAX]
 
 
 async def sync_loop(period_ms=200):

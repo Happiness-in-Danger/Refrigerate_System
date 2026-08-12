@@ -19,7 +19,11 @@ class RegisterMap:
         # 20    evap_fan_rpm         (state.state_data[ST_EVAP_FAN_RPM])
         # 21    cond_fan_rpm         (state.state_data[ST_COND_FAN_RPM])
         # 22    motor_speed          (state.state_data[ST_MOTOR_SPEED])
-        # 23-31 预留
+        # 23    valve_fault          (state.state_data[ST_VALVE_FAULT])      0/1
+        # 24    evap_fan_fault       (state.state_data[ST_EVAP_FAN_FAULT])   0/1
+        # 25    cond_fan_fault       (state.state_data[ST_COND_FAN_FAULT])   0/1
+        # 26    sensor_fault_summary (state.state_data[ST_SENSOR_FAULT])     0/1
+        # 27-31 预留
         self.input_regs = [0] * 32
 
         # ---- 离散量输入 (只读, 功能码02) ----
@@ -33,7 +37,29 @@ class RegisterMap:
         # 地址 8: EXV当前阀位*100 (只读语义，但物理上仍开放写，业务层自己保护)
         # 地址 9: 手动模式开关 (0=自动 1=手动)
         # 地址 10: 手动阀位指令*100
-        # 地址 11-31 预留
+        # 地址 11: aggr_mode 枚举 (0=off 1=proportional 2=togoal)
+        # 地址 12: tau*100
+        # 地址 13: 系统启动开关 (0=停机 1=运行)
+        #          对应 state.state_data[ST_SYSTEM_ENABLE]
+        # 地址 14: 压缩机PID Kp*100
+        # 地址 15: 压缩机PID Ki*100
+        # 地址 16: 压缩机PID Kd*100
+        # 地址 17: 压缩机PID setpoint*100
+        # 地址 18: 压缩机PID deadband*100
+        # 地址 19: 压缩机PID max_delta*100
+        # 地址 20: 压缩机PID error_threshold*100
+        # 地址 21: 压缩机PID T_goal*100
+        # 地址 22: 压缩机PID aggr_mode 枚举
+        # 地址 23: 压缩机PID tau*100
+        # 地址 24: 蒸发器风机转速指令 (r/min)  对应 state.state_data[ST_EVAP_FAN_SPEED_CMD]
+        # 地址 25: 冷凝器风机转速指令 (r/min)  对应 state.state_data[ST_COND_FAN_SPEED_CMD]
+        # 地址 24: 蒸发器风机转速指令 (r/min)  对应 state.state_data[ST_EVAP_FAN_SPEED_CMD]
+        # 地址 25: 冷凝器风机转速指令 (r/min)  对应 state.state_data[ST_COND_FAN_SPEED_CMD]
+        # 地址 26: 压缩机转速下限 (r/min)      对应 state.state_data[ST_MOTOR_SPEED_MIN]
+        # 地址 27: 压缩机转速上限 (r/min)      对应 state.state_data[ST_MOTOR_SPEED_MAX]
+        # 地址 28: 风机转速下限 (r/min)        对应 state.state_data[ST_FAN_SPEED_MIN]
+        # 地址 29: 风机转速上限 (r/min)        对应 state.state_data[ST_FAN_SPEED_MAX]
+        # 地址 30-31 预留
         self.holding_regs = [0] * 32
 
     # ---- 便捷读写方法，带边界检查 ----
