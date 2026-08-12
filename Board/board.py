@@ -22,6 +22,9 @@ rts=AD7124(AD7124_spi.spi,AD7124_cs.cs)
 #LCD
 LCD_Uart = UART(1,115200)
 
+#ModeBus RTU
+ModeBus_Screen = UART(8,9600)
+
 REGS = (
     (0x0001, 'u16'),
     (0x0002, 'u16'),
