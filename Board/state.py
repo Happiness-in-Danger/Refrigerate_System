@@ -43,8 +43,28 @@ ST_COND_FAN_RPM       = 8    # 冷凝器风机转速反馈 (r/min)
 ST_COND_FAN_FAULT     = 9    # 冷凝器风机转速异常/堵转标志，0/1
  
 ST_SENSOR_FAULT       = 10   # 任一传感器读数命中故障哨兵值时置位，0/1
- 
-state_data = [0] * 11
+
+ST_SYSTEM_ENABLE      = 11   # 系统启动开关：0=停机 1=运行
+                              # 压缩机/风机/EXV等主要部件启动前必须先检查此位
+                              # 可由 Modbus/组态屏写入，也可由安全联锁逻辑强制置0
+
+# ────────────────────────────────────────────────────────────
+# 转速限幅 —— 保护性限制，压缩机/风机的实际输出转速不允许超出
+# 这个范围。具体数值由硬件规格书/调试确定，这里先给占位默认值。
+# ⚠ 上线前必须用真实压缩机/风机规格校准，避免超转速损坏设备。
+# ────────────────────────────────────────────────────────────
+ST_MOTOR_SPEED_MIN    = 12   # 压缩机最低转速限制 (r/min)
+ST_MOTOR_SPEED_MAX    = 13   # 压缩机最高转速限制 (r/min)
+ST_FAN_SPEED_MIN      = 14   # 风机最低转速限制 (r/min)，蒸发器/冷凝器共用
+ST_FAN_SPEED_MAX      = 15   # 风机最高转速限制 (r/min)，蒸发器/冷凝器共用
+
+state_data = [0] * 16   # 原来是 [0] * 12
+
+# 占位默认值，需按压缩机/风机实际规格书校准
+state_data[ST_MOTOR_SPEED_MIN] = 1500
+state_data[ST_MOTOR_SPEED_MAX] = 6000
+state_data[ST_FAN_SPEED_MIN]   = 300
+state_data[ST_FAN_SPEED_MAX]   = 3000
 
 
 # ────────────────────────────────────────────────────────────
@@ -87,6 +107,7 @@ def update_all_sensor_faults(fault_value=999):
 
 # 运行时控制参数(软件默认值启动,屏幕连接后由 param_sync 覆盖同步)
 
+# EXV 过热度环 PID 参数，控制对象是 EXV 开度
 control_params = {
     "Kp": 0.6, "Ki": 0.12, "Kd": 3.0,
     "setpoint": 5.0, "error_threshold": 2.0,
@@ -94,27 +115,42 @@ control_params = {
     "aggr_mode": "togoal",
     "tau": 3.0, "T_goal": 5.0, 
 }
-def load_control_params(path="config.json"):
-    """开机调用：用config.json覆盖默认值，缺的key保留默认值不报错"""
-    try:
-        import json
-        with open(path, "r") as f:
-            saved = json.load(f)
-        control_params.update({k: v for k, v in saved.items() if k in control_params})
-    except Exception as e:
-        print("[state] config加载失败，使用默认参数:", e)
-    return control_params
 
-def save_control_params(path="config.json"):
-    """把当前control_params落盘"""
-    try:
-        import json
-        with open(path, "w") as f:
-            json.dump(control_params, f)
-        return True
-    except Exception as e:
-        print("[state] config保存失败:", e)
-        return False
+# ────────────────────────────────────────────────────────────
+# 压缩机转速环 PID 参数 —— 字段结构与 control_params 完全一致，
+# 用于压缩机转速闭环控制。
+# (吸气压力/排气压力/制冷量需求等)取决于压缩机驱动方案，
+# 方案未定前先按同样结构占位，具体含义由 Compressor 模块自己解释。
+# ────────────────────────────────────────────────────────────
+compressor_control_params = {
+    "Kp": 0.6, "Ki": 0.12, "Kd": 3.0,
+    "setpoint": 20.0, "error_threshold": 2.0,
+    "deadband": 0.2, "max_delta": 8.0,
+    "aggr_mode": "togoal",
+    "tau": 3.0, "T_goal": 5.0,
+}
+
+# def load_control_params(path="config.json"):
+#     """开机调用：用config.json覆盖默认值，缺的key保留默认值不报错"""
+#     try:
+#         import json
+#         with open(path, "r") as f:
+#             saved = json.load(f)
+#         control_params.update({k: v for k, v in saved.items() if k in control_params})
+#     except Exception as e:
+#         print("[state] config加载失败，使用默认参数:", e)
+#     return control_params
+
+# def save_control_params(path="config.json"):
+#     """把当前control_params落盘"""
+#     try:
+#         import json
+#         with open(path, "w") as f:
+#             json.dump(control_params, f)
+#         return True
+#     except Exception as e:
+#         print("[state] config保存失败:", e)
+#         return False
 
 # ────────────────────────────────────────────────────────────
 # 系统级故障寄存器 —— 16位, 对应 Modbus 离散输入 1x, 地址 0~15, FC02
