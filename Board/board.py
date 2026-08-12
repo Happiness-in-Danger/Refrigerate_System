@@ -23,7 +23,8 @@ rts=AD7124(AD7124_spi.spi,AD7124_cs.cs)
 LCD_Uart = UART(1,115200)
 
 #ModeBus RTU
-ModeBus_Screen = UART(8,9600)
+ModeBus_Screen = UART(8,9600, bits=8, parity=None, stop=1,
+             timeout=2, timeout_char=_silence_ms(9600), read_buf_len=256)
 
 REGS = (
     (0x0001, 'u16'),
