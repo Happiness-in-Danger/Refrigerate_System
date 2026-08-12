@@ -100,7 +100,7 @@ async def main():
         Ki              = config.get('Ki',              0.12),
         Kd              = config.get('Kd',              3.0),
         dt              = 1.0,
-        setpoint        = config.get('setpiont',        5.0),
+        setpoint        = config.get('setpoint',        5.0),
         deadband        = config.get('deadband',        0.2),
         max_delta       = config.get('max_delta',       8.0),
         tau             = 3.0,
