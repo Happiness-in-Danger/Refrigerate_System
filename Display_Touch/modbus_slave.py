@@ -44,14 +44,6 @@ _AGGR_MODE_FROM_INT = {v: k for k, v in _AGGR_MODE_TO_INT.items()}
 FAULT_SENTINEL = 999   # 与 Sensor/read_sensors.py, HAL/ADC_read.py 里的故障哨兵值一致
 
 
-def _silence_ms(baud):
-    """T3.5 帧间静默时间（ms），用来判断一帧是否收完"""
-    if baud > 19200:
-        return 2
-    t_char_ms = 11000.0 / baud
-    return max(2, int(t_char_ms * 3.5) + 1)
-
-
 _uart = board.ModeBus_Screen
 
 _de = Pin(DE_PIN, Pin.OUT, value=0) if DE_PIN else None
@@ -77,7 +69,7 @@ def _send(resp: bytes):
     _uart.write(frame)
     if _de:
         import time
-        time.sleep_ms(max(1, int(len(frame) * 11000 / BAUDRATE) + 1))
+        time.sleep_ms(max(1, int(len(frame) * 11000 / board.BAUDRATE) + 1))
         _de.value(0)
 
 
@@ -136,6 +128,10 @@ def _handle_write_multiple(addr, fc, req):
     start  = (req[2] << 8) | req[3]
     qty    = (req[4] << 8) | req[5]
     nbytes = req[6]
+    expected_len = 7 + nbytes + 2   # header+data+CRC
+    if len(req) < expected_len:
+        _exception(addr, fc, 0x03)
+        return
     if nbytes != qty * 2 or qty < 1 or qty > 123:
         _exception(addr, fc, 0x03); return
     values = []
@@ -171,6 +167,7 @@ def _apply_holding_writes(start, qty):
     if 13 in touched:
         state.state_data[state.ST_SYSTEM_ENABLE] = 1 if regs.holding_regs[13] else 0
 
+    ccp = state.compressor_control_params
     # 压缩机PID
     if 14 in touched: ccp['Kp']              = regs.holding_regs[14] / 100
     if 15 in touched: ccp['Ki']              = regs.holding_regs[15] / 100
@@ -210,7 +207,7 @@ async def _read_frame():
             buf += _uart.read(n)
         else:
             if buf:
-                await asyncio.sleep_ms(_silence_ms(BAUDRATE))
+                await asyncio.sleep_ms(board._silence_ms(board.BAUDRATE))
                 if _uart.any() == 0:
                     return bytes(buf)
             else:
@@ -224,9 +221,30 @@ def _process(req: bytes):
         print("[Modbus] CRC错误，丢弃, len=", len(req))
         return
     addr = req[0]
-    if addr != SLAVE_ADDR and addr != 0:
+    is_broadcast = (addr == 0)
+    if addr != SLAVE_ADDR and not is_broadcast:
         return
     fc = req[1]
+
+    if is_broadcast:
+        # 广播只允许写操作，且不回应答
+        if fc == FC_WRITE_SINGLE:
+            reg = (req[2] << 8) | req[3]
+            val16 = (req[4] << 8) | req[5]
+            if regs.write_single(regs.holding_regs, reg, _to_signed16(val16)):
+                _apply_holding_writes(reg, 1)
+        elif fc == FC_WRITE_MULTIPLE:
+            start = (req[2] << 8) | req[3]
+            qty = (req[4] << 8) | req[5]
+            nbytes = req[6]
+            if nbytes == qty * 2 and 1 <= qty <= 123:
+                values = []
+                for i in range(qty):
+                    hi = req[7 + i*2]; lo = req[8 + i*2]
+                    values.append(_to_signed16((hi << 8) | lo))
+                if regs.write_block(regs.holding_regs, start, values):
+                    _apply_holding_writes(start, qty)
+        return  # 广播不回复，无论什么功能码
 
     if fc == FC_READ_DISCRETE:
         _handle_read_bits(addr, fc, req)
@@ -243,7 +261,7 @@ def _process(req: bytes):
 
 
 async def slave_loop():
-    print("[Modbus] RTU从机启动 addr=%d baud=%d UART8" % (SLAVE_ADDR, BAUDRATE))
+    print("[Modbus] RTU从机启动 addr=%d baud=%d UART8" % (SLAVE_ADDR, board.BAUDRATE))
     while True:
         req = await _read_frame()
         if req:
@@ -291,6 +309,10 @@ def sync_input_regs():
     ir[26] = st[state.ST_SENSOR_FAULT]
 
     # 27-31 预留，不动
+    er = state.error_reg
+    di = regs.discrete_inputs
+    for bit in range(16):
+        di[bit] = 1 if (er & (1 << bit)) else 0   # 1=正常 0=异常，跟 error_reg 定义一致
 
 
 def sync_holding_readback():

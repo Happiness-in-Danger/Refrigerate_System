@@ -21,16 +21,22 @@ import Board.state as state
 # ------------------------
 async def Compressor():
     while True:
-        
-
-        await asyncio.sleep(0.5)  # 每0.5秒执行一次
+        if state.state_data[state.ST_SYSTEM_ENABLE]:
+            # TODO: 压缩机驱动方案未定，这里先占位
+            # 可用参数：state.compressor_control_params（Kp/Ki/Kd/setpoint等）
+            # 闭环目标量待定（吸气压力/排气压力/制冷量需求），驱动方案确定后再接入
+            pass
+        else:
+            # 系统未启动/被停止，确保压缩机保持停机状态
+            pass
+        await asyncio.sleep(0.5)
 
 # ------------------------
 # Model B：EXV open
 # ------------------------
 async def Exv():
     while True:
-        exv_ctrl.run()
+        await exv_ctrl.run()
 
         await asyncio.sleep_ms(1000)
     
@@ -69,44 +75,36 @@ async def Sensor():
 # ------------------------
 # file log
 # ------------------------
-async def Log():
-    while True:
-        try:
-            with open("data_log.txt", "a") as f:
-                f.write(f"{time.time()},{global_state['sensor_value']},{global_state['motor_speed']},{global_state['valve_pos']}\n")
-        except:
-            print("[Log] File write error")
+# async def Log():
+#     while True:
+#         try:
+#             with open("data_log.txt", "a") as f:
+#                 f.write(f"{time.time()},{global_state['sensor_value']},{global_state['motor_speed']},{global_state['valve_pos']}\n")
+#         except:
+#             print("[Log] File write error")
 
-        state.save_control_params('config.json')   # 换掉不存在的 exv_ctrl.save_parameters
-        await asyncio.sleep(5000)
+#         #state.save_control_params('config.json')   # 换掉不存在的 exv_ctrl.save_parameters
+#         await asyncio.sleep(5000)
 
 # ------------------------
 # main
 # ------------------------
 async def main():
 
-    # ── 读取PID配置 ───────────────────────────────────────────
-    try:
-        with open('config.json', 'r') as f:
-            config = json.load(f)
-        print("[Main] config加载成功:", config)
-    except Exception as e:
-        print("[Main] config读取失败，使用默认参数:", e)
-        config = {}
 
     # ── 初始化PID控制器 ───────────────────────────────────────
     ctrl_exv = IncrementalController(
-        Kp              = config.get('Kp',              0.6),
-        Ki              = config.get('Ki',              0.12),
-        Kd              = config.get('Kd',              3.0),
+        Kp              = state.control_params['Kp'],
+        Ki              = state.control_params['Ki'],
+        Kd              = state.control_params['Kd'],
         dt              = 1.0,
-        setpoint        = config.get('setpoint',        5.0),
-        deadband        = config.get('deadband',        0.2),
-        max_delta       = config.get('max_delta',       8.0),
-        tau             = 3.0,
-        error_threshold = config.get('error_threshold', 2.0),
-        aggr_mode       = config.get('aggr_mode',       'togoal'),
-        T_goal          = 5.0,
+        setpoint        = state.control_params['setpoint'],
+        deadband        = state.control_params['deadband'],
+        max_delta       = state.control_params['max_delta'],
+        tau             = state.control_params['tau'],
+        error_threshold = state.control_params['error_threshold'],
+        aggr_mode       = state.control_params['aggr_mode'],
+        T_goal          = state.control_params['T_goal'],
     )
     
     # ── 注入PID控制器到EXV调度模块 ───────────────────────────
@@ -118,7 +116,7 @@ async def main():
         Exv(),
         Display(),
         Sensor(),
-        Log()
+        # Log()
     )
 
 asyncio.run(main())
