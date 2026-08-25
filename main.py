@@ -8,7 +8,10 @@ from HAL.PID_Plus import IncrementalController
 import EXV.Valve_CRTL as exv_ctrl
 from HAL.ADC_sample import SmoothedADC
 from Display_Touch.Desplay import desplay
+from Board import board
+import Board.state as state
 from Sensor.read_sensors import reads
+
 
 # ------------------------
 # 全局变量区
@@ -59,8 +62,8 @@ async def Sensor():
     elapsed = 0
     while True:
         try:
-            adc_pc2.sample()
-            adc_pc3.sample()
+            board.adc_pc2.sample()
+            board.adc_pc3.sample()
             elapsed += 12   #sample_interval_ms
 
             if elapsed >= 200:

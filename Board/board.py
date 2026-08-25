@@ -24,14 +24,14 @@ LCD_Uart = UART(1,115200)
 
 #ModeBus RTU
 BAUDRATE   = 9600
-ModeBus_Screen = UART(8,BAUDRATE, bits=8, parity=None, stop=1,
-             timeout=2, timeout_char=_silence_ms(BAUDRATE), read_buf_len=256)
 def _silence_ms(baud):
     """T3.5 帧间静默时间（ms），用来判断一帧是否收完"""
     if baud > 19200:
         return 2
     t_char_ms = 11000.0 / baud
     return max(2, int(t_char_ms * 3.5) + 1)
+ModeBus_Screen = UART(8,BAUDRATE, bits=8, parity=None, stop=1,
+             timeout=2, timeout_char=_silence_ms(BAUDRATE), read_buf_len=256)
 
 REGS = (
     (0x0001, 'u16'),

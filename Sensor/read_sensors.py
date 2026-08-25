@@ -12,9 +12,9 @@ def reads():
     tem_data = board.rts.config_pt100_chs()
     for i in range(5):
         state.sensor_data[i] = tem_data[i]
-    state.sensor_data[5] = psi_trans(board.adc_pc2c.SmoothedADC.value())
-    state.sensor_data[6] = psi_trans(board.adc_pc3c.SmoothedADC.value())
-    state.sensor_data[7] = int(( state.sensor_data[0] - read_sat_temp(state.sensor_data[5]))*100)/100
+    state.sensor_data[5] = psi_trans(board.adc_pc2c.value())
+    state.sensor_data[6] = psi_trans(board.adc_pc3c.value())
+    state.sensor_data[7] = int((state.sensor_data[0] - read_sat_temp(state.sensor_data[5]))*100 + (0.5 if state.sensor_data[0] >= (read_sat_temp(state.sensor_data[5])) else -0.5))/100
     state.sensor_data[8] = read_E(state.sensor_data[5],state.sensor_data[0])
 
     state.update_all_sensor_faults()

@@ -65,6 +65,7 @@ import Board.state as state
 _exv_ctrl     = None   # PID控制器，由main.py注入
 pending_delta = 0.0    # 累积待执行增量
 valve_busy    = False  # 阀门忙碌标志
+_synced_params = None  # 最近一次应用到控制器的屏幕参数
 
 
 # ════════════════════════════════════════════════════════════
@@ -73,8 +74,33 @@ valve_busy    = False  # 阀门忙碌标志
 
 def set_controller(ctrl):
     """main.py 初始化PID后调用，注入控制器实例"""
-    global _exv_ctrl
+    global _exv_ctrl, _synced_params
     _exv_ctrl = ctrl
+    _synced_params = _controller_params()
+
+
+def _controller_params():
+    cp = state.control_params
+    params = tuple(cp[key] for key in (
+        'Kp', 'Ki', 'Kd', 'setpoint', 'deadband', 'max_delta',
+        'error_threshold', 'aggr_mode', 'tau', 'T_goal'))
+    if params[-1] <= 0:
+        params = params[:-1] + (1e-6,)
+    return params
+
+
+def _sync_controller_params():
+    """Apply screen changes without resetting unchanged online-tuned gains."""
+    global _synced_params
+    params = _controller_params()
+    if params == _synced_params:
+        return
+
+    (_exv_ctrl.Kp, _exv_ctrl.Ki, _exv_ctrl.Kd,
+     _exv_ctrl.setpoint, _exv_ctrl.deadband, _exv_ctrl.max_delta,
+     _exv_ctrl.error_threshold, _exv_ctrl.aggr_mode,
+     _exv_ctrl.tau, _exv_ctrl.T_goal) = params
+    _synced_params = params
 
 
 # ════════════════════════════════════════════════════════════
@@ -84,6 +110,13 @@ def set_controller(ctrl):
 async def pid_loop():
     global pending_delta
     while True:
+        if not state.state_data[state.ST_SYSTEM_ENABLE]:
+            # Do not retain commands generated before the system was stopped.
+            pending_delta = 0.0
+            await asyncio.sleep_ms(1000)
+            continue
+
+        _sync_controller_params()
         sh = state.sensor_data[7]
         if sh == 999:
             print("[PID] 传感器故障，跳过本次计算")
@@ -102,6 +135,11 @@ async def pid_loop():
 async def valve_loop():
     global pending_delta, valve_busy
     while True:
+        if not state.state_data[state.ST_SYSTEM_ENABLE]:
+            pending_delta = 0.0
+            await asyncio.sleep_ms(100)
+            continue
+
         # 定期归零检查（每20次动作触发）
         # await exv.check_and_rehome()
 
@@ -145,6 +183,10 @@ async def run():
     上电归零 + 启动 pid_loop 和 valve_loop
     main.py 在 asyncio.gather 里调用此函数
     """
+    if not state.state_data[state.ST_SYSTEM_ENABLE]:
+        await asyncio.sleep_ms(100)
+        return
+
     ok = await exv.homing()
     if not ok:
         print("[EXV] 归零失败")
