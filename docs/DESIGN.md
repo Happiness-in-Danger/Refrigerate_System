@@ -603,7 +603,7 @@ RUNNING_THERMO_OFF = 3  # R4: 达到设定，压缩机停
 
 **质量门禁**：反馈 rpm 无效（999）或 driver_link_ok=False → `throttle_adjust = 0`（不调节）。
 
-**实现位置**：`Compressor/__init__.py`（Step5b 实现）
+**实现位置**：`Compressor/control.py`；公共接口由 `Compressor/__init__.py` 导出（Step5b 实现）
 
 ### 7.3 冷凝压力环（排气压力 → 冷凝风机油门）
 
@@ -685,7 +685,7 @@ RUNNING_THERMO_OFF = 3  # R4: 达到设定，压缩机停
 
 **质量门禁**：反馈 rpm 无效（999）或 driver_link_ok=False → `throttle_adjust = 0`（不调节）。
 
-**实现位置**：`Condenser/__init__.py`（Step5b 实现）
+**实现位置**：`Condenser/control.py`；公共接口由 `Condenser/__init__.py` 导出（Step5b 实现）
 
 ### 7.4 过热度环（过热度 → EXV 开度）
 
@@ -726,7 +726,7 @@ RUNNING_THERMO_OFF = 3  # R4: 达到设定，压缩机停
 
 **策略**：RUNNING 期间始终读取 `state_data[ST_EVAP_FAN_SPEED_CMD]`（对应 Modbus hr13），无自动调节逻辑。
 
-**实现**：`Evaporator/__init__.py`（Step5b 实现）
+**实现**：`Evaporator/control.py`；公共接口由 `Evaporator/__init__.py` 导出（Step5b 实现）
 
 #### 7.5.1 基础油门来源
 
@@ -1116,7 +1116,7 @@ ESC_TELEMETRY_CFG = [
 | 5 | supervisor 联锁输出 | 改为 `*_rpm_cmd`（目标转速），不再是 `*_throttle_cmd`（油门） |
 | 6 | 手动模式参数 | hr11/12/13 改为目标转速（rpm），不再是油门值（throttle） |
 | 7 | 启动时序参数 | `COMP_START_TARGET_RPM` / `COND_FAN_START_RPM` / `EVAP_FAN_START_RPM`（转速） |
-| 8 | 转速环实现位置 | `Compressor/__init__.py` / `Condenser/__init__.py` / `Evaporator/__init__.py` |
+| 8 | 转速环实现位置 | `Compressor/control.py` / `Condenser/control.py` / `Evaporator/control.py`；公共接口由各 `__init__.py` 导出 |
 
 **设计理由**：
 - ESC 油门→转速是非线性的，且受负载、电压、温度影响
@@ -1131,7 +1131,9 @@ ESC_TELEMETRY_CFG = [
 - 进度与问题台账：`PLAN.md`
 - 验收报告：`REPORT.md`
 - 文件结构与索引：`STRUCTURE.md`
+- Modbus 点位表：`MODBUS_POINT_TABLE.md`
 - 开发规范：`AI_DEVELOPMENT_RULES.md`
+- 架构设计规范：`ARCHITECTURE_PLAN.md`（本文档的详细版）
 
 ---
 
