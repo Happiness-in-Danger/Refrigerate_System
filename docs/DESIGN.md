@@ -66,9 +66,10 @@
 ### 1.4 代码完成度
 
 - **Step1-4**：已封板（检查层、Alarm/supervisor、Driver link 去阻塞）
-- **Step5a**：设备执行模块开发中（Compressor/Evaporator/Condenser 空壳待填）
-- **Step5b**：三环控制尚未实现（容量环、冷凝压力环）
-- **测试状态**：77/78 PASS（Step2 25 / Step3 29 / Step4 23）
+- **Step5a**：已封板（设备执行层、转速环架构 v3.3、手动模式、启停时序）
+- **Step5b**：已封板（三环控制、温控循环、L1 限载、排气温度保护、重试锁定）
+- **Step6**：待开始（参数统一、Modbus 扩展、周期失配修复）
+- **测试状态**：161/161 PASS（Step2 25 / Step3 30 / Step4 23 / Step5a 27 / Step5b 56）
 
 **注意**：本文档区分"代码现状"和"目标设计"，不得把伪代码或计划项当作已实现功能。
 
@@ -136,7 +137,7 @@
 | 7 | `ST_COND_FAN_SPEED_CMD` | 冷凝风机转速指令 | r/min | Condenser 模块 |
 | 8 | `ST_COND_FAN_RPM` | 冷凝风机转速反馈 | r/min | Condenser 模块 |
 | 9 | `ST_COND_FAN_FAULT` | 冷凝风机故障事件位 | 0/1 | Condenser 模块 |
-| 10 | `ST_SENSOR_FAULT` | 传感器故障汇总（单 bit） | 0/1 | supervisor |
+| 10 | `ST_SENSOR_FAULT` | 传感器故障汇总（单 bit，Step6 扩展为 16-bit） | 0/1 | supervisor |
 | 11 | `ST_SYSTEM_ENABLE` | 系统使能（Modbus hr0） | 0/1 | Modbus |
 | 12 | `ST_MOTOR_SPEED_MIN` | 压缩机最低转速限制 | r/min | Modbus |
 | 13 | `ST_MOTOR_SPEED_MAX` | 压缩机最高转速限制 | r/min | Modbus |
@@ -173,11 +174,11 @@
 ```python
 {
     "comp_enable": bool,                 # 压缩机使能门禁
-    "comp_rpm_cmd": 0..6000,             # 压缩机目标转速 (rpm)
+    "comp_throttle_cmd": 0..2047,        # 压缩机油门指令（v3.3）
     "evap_fan_enable": bool,             # 蒸发风机使能门禁
-    "evap_fan_rpm_cmd": 0..3000,         # 蒸发风机目标转速 (rpm)
+    "evap_fan_throttle_cmd": 0..2047,    # 蒸发风机油门指令（v3.3）
     "cond_fan_enable": bool,             # 冷凝风机使能门禁
-    "cond_fan_rpm_cmd": 0..3000,         # 冷凝风机目标转速 (rpm)
+    "cond_fan_throttle_cmd": 0..2047,    # 冷凝风机油门指令（v3.3）
     "exv_enable": bool,                  # EXV 使能门禁
     "exv_target_pct": 0.0..100.0,        # EXV 目标开度（%）
 }
@@ -234,31 +235,37 @@
 
 质量码三级：`Q_OK=0` / `Q_SUSPECT=1` / `Q_BAD=2`
 
-### 4.2 双环控制架构
+### 4.2 控制架构（v3.3）
 
-**外环（慢环）**：输出目标转速（rpm_cmd）
-- 容量环（10s）：出液温度 → 压缩机目标转速
-- 冷凝压力环（2s）：排气压力 → 冷凝风机目标转速
+**外环（慢环）**：输出油门绝对值（throttle_base）
+- 容量环（10s）：出液温度 → 压缩机油门（throttle_base）
+- 冷凝压力环（2s）：排气压力 → 冷凝风机油门（throttle_base）
 - 过热度环（1s）：过热度 → EXV 开度
-- 蒸发风机：用户设定（hr13）→ 目标转速
+- 蒸发风机：用户设定（hr13）→ 油门（throttle_base）
 
-**内环（快环）**：转速环，输出油门值（throttle_cmd）
-- 压缩机转速环（0.5s）：rpm_cmd vs 反馈rpm → throttle_cmd
-- 冷凝风机转速环（0.5s）：rpm_cmd vs 反馈rpm → throttle_cmd
-- 蒸发风机转速环（0.5s）：rpm_cmd vs 反馈rpm → throttle_cmd
+**转速环（可选保护层，0.5s）**：输出油门调节量（throttle_adjust）
+- 压缩机转速环：rpm_current vs rpm_max → throttle_adjust（±100）
+- 冷凝风机转速环：rpm_current vs rpm_max → throttle_adjust（±100）
+- 蒸发风机转速环：rpm_current vs rpm_max → throttle_adjust（±100）
+- 三个独立开关控制，可单独启用/禁用
 
 **控制流**：
 ```
-外环（温度/压力） → rpm_cmd → 内环（转速环） → throttle_cmd → ESC
-                                 ↑
-                            ESC 遥测反馈 rpm
+外环（温度/压力） → throttle_base（油门绝对值）
+                        ↓
+转速环（可选）→ throttle_adjust（调节量）
+                        ↓
+            throttle_final = throttle_base + throttle_adjust → ESC
+                        ↑
+                   ESC 遥测反馈 rpm
 ```
 
 **关键设计**：
-- 外环和内环解耦：外环更新周期长（2-10s），内环持续运行（0.5s）
-- 即使外环输出不变，内环仍持续修正油门以维持转速稳定（抵抗负载变化）
-- 转速限幅在 rpm_cmd 层面实施（`ST_MOTOR_SPEED_MIN/MAX`）
-- 油门限幅在 throttle_cmd 层面实施（48-2047）
+- 外环直接输出油门绝对值（48-2047），基于启动默认油门累加 PID 输出
+- 转速环作为保护限幅器，仅在转速接近上限时产生负调节量
+- 转速环死区 200 rpm，最大调节量 ±100 throttle
+- 外环和转速环解耦：外环更新周期长（2-10s），转速环持续运行（0.5s）
+- 油门最终限幅在 throttle_final 层面实施（0-2047）
 
 **所有执行机构的指令都是油门值（throttle），不是转速（rpm）**：
 
@@ -288,6 +295,16 @@
 | `supervisor_interlocks` | supervisor |
 | `driver_link_ok` | `main.DriverLink()` |
 | `state_data[16-31]` ESC 遥测 | `HAL/Driver.py` link 协程 |
+
+**C8 问题（Step6 待修复）**：
+- **当前状态**：`ST_SENSOR_FAULT`（索引 10）为单 bit，仅区分"有故障"和"无故障"
+- **数据源**：`sensor_fault_reg` 已是 16-bit 寄存器（5 路传感器 + 2 路压力 + 1 路电流 = 8 位有效）
+- **问题**：信息丢失，无法区分具体哪路传感器故障
+- **Step6 修复方案**：
+  - 保留 `ST_SENSOR_FAULT` 作为汇总标志（向后兼容）
+  - 新增 Modbus `ir12`：映射完整 16-bit `sensor_fault_reg`
+  - 新增 Discrete Inputs `di16-di23`：分位映射各传感器故障（可选）
+  - 位定义顺序：bit0=吸气温度、bit1=排气温度、bit2=进液温度、bit3=出液温度、bit4=液管温度、bit5=高压、bit6=低压、bit7=电流、bit8-15=保留
 
 ### 4.4 全延时原则
 
@@ -956,59 +973,189 @@ manual_params = {
 }
 ```
 
-# 容量环执行参数
-cap_loop_params = {
-    "CAP_LOOP_PERIOD_S": 10.0,
-    "RAMP_UP_RPM_S": 100,
-    "RAMP_DOWN_RPM_S": 200,
-}
+### 9.3 ESC 遥测配置
 
-# 冷凝压力环
-cond_loop_params = {
-    "HP_TARGET": 12.0,             # bara
-    "COND_LOOP_PERIOD_S": 2.0,
-    "COND_FAN_MIN_RUN_RPM": 500,
-}
-
-# 温控循环
-thermo_params = {
-    "THERMO_HYST": 2.0,            # K
-}
-
-# 蒸发风机
-evap_fan_params = {
-    "EVAP_FAN_THERMO_OFF_KEEP": 1,  # 1=R4期间蒸发风保持
-}
-
-# 手动模式（v3.2 改为转速）
-manual_params = {
-    "MANUAL_MODE_ENABLE": 0,
-    "MANUAL_COMP_RPM": 0,              # 目标转速 rpm
-    "MANUAL_COND_FAN_RPM": 0,          # 目标转速 rpm
-    "MANUAL_EXV_PCT": 30.0,
-}
-
-# 蒸发风机用户设定（对应 hr13，始终生效）
-evap_fan_user_params = {
-    "EVAP_FAN_USER_RPM": 1500,         # 默认转速 1500 rpm
-}
-
+```python
 # ESC 遥测配置
 ESC_TELEMETRY_CFG = [
-    # ESC0 压缩机（倍率待台架标定）
+    # ESC0 压缩机
     {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
-     "erpm_scale": 1.0, "voltage_scale": 0.01, "current_scale": 0.01, "pole_pairs": 4},
+     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 4},
     # ESC1 蒸发风机 — 本机 current 无效
     {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
-     "erpm_scale": 1.0, "voltage_scale": 0.01, "current_scale": 0.01, "pole_pairs": 7},
-    # ESC2 冷凝风机
+     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 7},
+    # ESC2 冷凝风机 — 本机 current 无效
     {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
-     "erpm_scale": 1.0, "voltage_scale": 0.01, "current_scale": 0.01, "pole_pairs": 7},
+     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 7},
     # ESC3 备用
-    {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
-     "erpm_scale": 1.0, "voltage_scale": 0.01, "current_scale": 0.01, "pole_pairs": 1},
+    {"erpm": False, "temp": False, "voltage": False, "current": False,
+     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 7},
 ]
 ```
+
+**修复说明（CRITICAL-1，Step5a 已修复）**：
+- voltage_scale/current_scale 从 0.01 修正为 1.0
+- 原错误倍率导致反馈值缩小 100 倍
+- 修复位置：`state.py:410,413,416,419`
+
+### 9.4 参数持久化规范（Step6 实现）
+
+#### 9.4.1 持久化范围
+
+**需要持久化的参数**：
+- 所有 Modbus Holding Registers（hr0-hr92）
+- PID 参数：过热度环、容量环、冷凝压力环、转速环
+- 保护阈值：高压、低压、电流、排气温度、过热度
+- 延时槽：8 个槽值
+- 启动参数、防短循环参数、转速环开关
+
+**不持久化的参数**：
+- 手动模式指令（hr11-hr14）：运行时临时指令
+- 故障复位（hr48）：脉冲命令
+- 所有只读寄存器（Input Registers）
+- 运行时状态变量
+
+#### 9.4.2 存储格式
+
+**文件**：`config.json`（单一配置文件）
+
+**格式**：
+```json
+{
+  "version": 1,
+  "timestamp": 1234567890,
+  "checksum": "0xABCD1234",
+  "params": {
+    "sh_pid": {"Kp": 0.6, "Ki": 0.12, "Kd": 3.0, ...},
+    "cap_pid": {"Kp": 50.0, "Ki": 5.0, ...},
+    "cond_pid": {...},
+    "comp_speed_loop": {...},
+    "fan_speed_loop": {...},
+    "protect": {"HP_MAX": 22.0, "LP_MIN": 2.5, ...},
+    "delay_slots": [0, 5, 10, 30, 45, 60, 300, 900],
+    "startup": {...},
+    "speed_loop_enable": {...}
+  }
+}
+```
+
+#### 9.4.3 写入触发机制
+
+**触发条件**：
+1. **参数修改防抖**：Modbus 写入后延时 30 秒再保存（避免频繁写 flash）
+2. **正常停机时**：系统进入 SAFE_STOP 时保存一次
+3. **手动触发**：Modbus 写特殊命令触发立即保存（可选）
+
+**防抖算法**：
+```python
+# 伪代码
+on_modbus_write(hr_addr, value):
+    update_ram_params(hr_addr, value)
+    reset_save_timer(30_seconds)  # 重置计时器
+    
+on_save_timer_expire():
+    save_to_flash()
+    
+on_safe_stop_enter():
+    cancel_save_timer()
+    save_to_flash()  # 立即保存
+```
+
+#### 9.4.4 Flash 写入保护
+
+**Flash 寿命管理**：
+- STM32H743 Flash 最小擦写次数：10,000 次/块
+- 保守估算：单块可用 1,000 次
+- 防抖 30 秒 + 日常调参频率 → 预估寿命 > 10 年
+
+**写入策略**：
+- 采用 JSON 格式（便于调试和版本迁移）
+- 单文件覆盖写入（简单可靠）
+- 写入前先写临时文件 `config.json.tmp`，成功后重命名（原子性）
+- 写入失败时保留旧配置
+
+**损坏检测与回退**：
+```python
+def load_config():
+    try:
+        with open('config.json', 'r') as f:
+            cfg = json.load(f)
+        if verify_checksum(cfg):
+            return cfg
+        else:
+            log_error("Config checksum mismatch")
+            return load_defaults()
+    except:
+        log_error("Config load failed, using defaults")
+        return load_defaults()
+```
+
+#### 9.4.5 版本迁移
+
+**版本号管理**：
+- 配置文件包含 `"version": 1`
+- 代码中定义 `CONFIG_VERSION_CURRENT = 1`
+
+**迁移策略**：
+```python
+def migrate_config(cfg):
+    cfg_ver = cfg.get("version", 0)
+    
+    if cfg_ver < 1:
+        # v0 → v1: 添加转速环参数
+        cfg["speed_loop_enable"] = {"comp": 1, "cond": 1, "evap": 1}
+        cfg["version"] = 1
+    
+    # 未来版本迁移在此添加
+    # if cfg_ver < 2:
+    #     ...
+    
+    return cfg
+```
+
+**兼容性原则**：
+- 新增参数：提供默认值
+- 删除参数：忽略（不报错）
+- 重命名参数：兼容层映射旧名称
+- 不向后兼容的变更：递增 major version
+
+#### 9.4.6 MicroPython 兼容性
+
+**JSON 限制**：
+- MicroPython `json` 模块**不支持** `encoding=` / `indent=` / `ensure_ascii=` 参数
+- 读写时不使用这些参数
+
+**正确用法**：
+```python
+# ✅ 正确
+with open('config.json', 'w') as f:
+    json.dump(cfg, f)
+
+# ❌ 错误（MicroPython 不支持）
+with open('config.json', 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+```
+
+**PID_Plus 修复**（A6 问题）：
+- 当前 `PID_Plus.save()` / `load()` 使用了不支持的参数
+- Step6 修改为兼容的调用方式
+
+#### 9.4.7 掉电测试标准
+
+**Step6 验收标准**：
+1. **基础功能**：
+   - 修改任意 PID 参数 → 等待 30 秒 → 掉电重启 → 参数保持
+   - 修改保护阈值 → SAFE_STOP → 掉电重启 → 参数保持
+   
+2. **防抖验证**：
+   - 连续修改 10 个参数（间隔 < 30 秒）→ 只触发 1 次 flash 写入
+   
+3. **损坏恢复**：
+   - 手动破坏 `config.json`（删除或改为非法 JSON）→ 重启 → 加载默认值，系统正常运行
+   
+4. **Flash 写入次数**：
+   - 记录写入次数（日志或计数器）
+   - 验收标准：< 10 次/小时（正常调参场景）
 
 ---
 
@@ -1105,24 +1252,32 @@ ESC_TELEMETRY_CFG = [
 | 3 | 停机顺序修订 | EXV 关闭 → 延时停压缩机 → 延时停风机 |
 | 4 | 废弃固定时间参数 | 改为引用延时槽 |
 
-### 11.4 转速环设计（2026-09-07）
+### 11.4 转速环设计（2026-09-08，v3.3 修订）
 
-| # | 决策 | 拍板结论 |
+**架构变更历史**：
+- **v3.2（2026-09-07）**：双环控制，外环输出 rpm_cmd，内环转速环输出 throttle_cmd
+- **v3.3（2026-09-08）**：修订为外环输出 throttle，转速环作为可选保护限幅器
+
+| # | 决策 | v3.3 拍板结论 |
 |---|---|---|
-| 1 | 是否增加转速环？ | **是**，所有 ESC 执行机构都需要转速环 |
+| 1 | 是否增加转速环？ | **是**，作为可选的超速保护机制（三个独立开关控制） |
 | 2 | 转速环实施范围 | **压缩机 + 冷凝风机 + 蒸发风机**（三个执行机构） |
-| 3 | 控制架构 | **双环控制**：外环（温度/压力）→ rpm_cmd；内环（转速环）→ throttle_cmd |
-| 4 | 转速环周期 | **0.5s**（独立运行，与外环解耦） |
-| 5 | supervisor 联锁输出 | 改为 `*_rpm_cmd`（目标转速），不再是 `*_throttle_cmd`（油门） |
-| 6 | 手动模式参数 | hr11/12/13 改为目标转速（rpm），不再是油门值（throttle） |
-| 7 | 启动时序参数 | `COMP_START_TARGET_RPM` / `COND_FAN_START_RPM` / `EVAP_FAN_START_RPM`（转速） |
-| 8 | 转速环实现位置 | `Compressor/control.py` / `Condenser/control.py` / `Evaporator/control.py`；公共接口由各 `__init__.py` 导出 |
+| 3 | 控制架构 | **外环输出油门 + 转速环限幅保护**：外环（温度/压力）→ throttle_base；转速环（可选）→ throttle_adjust；最终 throttle_cmd = throttle_base + throttle_adjust |
+| 4 | 转速环角色 | **保护限幅器**，防止转速超过 rpm_max，不是主控制环 |
+| 5 | 转速环周期 | **0.5s**（持续运行，但只在接近上限时产生作用） |
+| 6 | supervisor 联锁输出 | 保持 `*_throttle_cmd`（油门绝对值），不改为 rpm_cmd |
+| 7 | 手动模式参数 | hr11/12/13 为油门值（throttle，48-2047） |
+| 8 | 启动时序参数 | `COMP_START_THROTTLE` / `COND_FAN_START_THROTTLE` / `EVAP_FAN_START_THROTTLE`（油门） |
+| 9 | 转速环开关 | `COMP_SPEED_LOOP_ENABLE` / `COND_FAN_SPEED_LOOP_ENABLE` / `EVAP_FAN_SPEED_LOOP_ENABLE`（三个独立开关） |
+| 10 | 晋级判据 | 转速稳定性检查：10 秒窗口内转速变化 < 100 rpm（模式 1） |
+| 11 | 转速环实现位置 | `Compressor/control.py` / `Condenser/control.py` / `Evaporator/control.py`；公共接口由各 `__init__.py` 导出 |
 
-**设计理由**：
-- ESC 油门→转速是非线性的，且受负载、电压、温度影响
-- 启动时序判据是转速反馈，需要精确控制
-- 转速限幅（`ST_MOTOR_SPEED_MIN/MAX`）需要在 rpm 层面实施
-- L1 限载动作（降容到固定转速）需要转速环支持
+**v3.3 设计理由**：
+- 外环直接输出油门更直观，易于调试和手动控制
+- 转速环作为保护层，可独立开关，不影响基础控制逻辑
+- 启动时以恒定油门启动更简单可靠，无需斜坡
+- 晋级判据基于转速稳定性，不依赖目标转速到位
+- 手动模式与自动模式使用相同的转速环保护机制
 
 ---
 
@@ -1133,7 +1288,6 @@ ESC_TELEMETRY_CFG = [
 - 文件结构与索引：`STRUCTURE.md`
 - Modbus 点位表：`MODBUS_POINT_TABLE.md`
 - 开发规范：`AI_DEVELOPMENT_RULES.md`
-- 架构设计规范：`ARCHITECTURE_PLAN.md`（本文档的详细版）
 
 ---
 
