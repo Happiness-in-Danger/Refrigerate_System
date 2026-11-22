@@ -23,6 +23,8 @@
 - 验收报告 → `REPORT.md`
 - 文件结构与索引 → `STRUCTURE.md`
 - Modbus 点位表 → `MODBUS_POINT_TABLE.md`
+- 硬件物理 I/O 与软件信号映射 → `IO_MAP.md`
+- 全系统运行信息流 → `SYSTEM_FULL_MAP.md`
 
 ---
 
@@ -84,6 +86,8 @@
 ## 2. 硬件资源与平台
 
 ### 2.1 硬件资源分配表
+
+> 本节列出平台资源摘要。物理端点到软件索引、控制模块和反馈点的完整交叉映射见 [`IO_MAP.md`](IO_MAP.md)；HMI 地址见 [`MODBUS_POINT_TABLE.md`](MODBUS_POINT_TABLE.md)。
 
 | 资源 | 用途 | 引脚/参数 | 状态 |
 |---|---|---|---|
@@ -2412,8 +2416,8 @@ for psi, temp in test_cases:
 
 #### 十、相关文档
 
-- [Modbus重构计划](MODBUS_REFACTOR_PLAN.md)
-- [Modbus审核报告](MODBUS_REFACTOR_AUDIT_REPORT.md)
+- [Modbus重构计划（归档）](archive/MODBUS_REFACTOR_PLAN.md)
+- [Modbus审核报告（归档）](archive/MODBUS_REFACTOR_AUDIT_REPORT.md)
 - [参考点表](参考.csv)
 - [标准点表](标准.csv)
 

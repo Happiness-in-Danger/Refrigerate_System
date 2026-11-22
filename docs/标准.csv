@@ -1,0 +1,17 @@
+﻿﻿吸气温度,MODBUS RTU,3x,1
+排气温度,MODBUS RTU,3x,2
+进口温度,MODBUS RTU,3x,3
+出口温度,MODBUS RTU,3x,4
+液管温度,MODBUS RTU,3x,5
+吸气压力,MODBUS RTU,3x,6
+排气压力,MODBUS RTU,3x,7
+过热度,MODBUS RTU,3x,8
+过冷度,MODBUS RTU,3x,9
+进口焓,MODBUS RTU,3x,10
+出口焓,MODBUS RTU,3x,11
+压缩机转速,MODBUS RTU,3x,12
+压缩机电流,MODBUS RTU,3x,13
+输入功率,MODBUS RTU,3x,14
+膨胀阀开度,MODBUS RTU,3x,15
+膨胀阀步数,MODBUS RTU,3x,16
+开关,MODBUS RTU,0x_single_coil,0

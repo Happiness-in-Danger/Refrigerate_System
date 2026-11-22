@@ -184,12 +184,13 @@ class IncrementalController:
             "error_threshold": self.error_threshold,
             "K_aggr": self.K_aggr, "T_goal": self.T_goal,
         }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # A6/Step6：MicroPython json 不支持 encoding / indent / ensure_ascii 参数
+        with open(path, "w") as f:
+            json.dump(data, f)
 
     def load_parameters(self, path):
         """加载上次保存的 PID 参数，避免每次启动都从头整定。"""
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r") as f:
             data = json.load(f)
         self.Kp = data.get("Kp", self.Kp)
         self.Ki = data.get("Ki", self.Ki)

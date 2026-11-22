@@ -1,12 +1,8 @@
 from HAL.SPI import SPIBus,SPIDev
 from HAL.ADC_sample import SmoothedADC
-from Sensor.AD7124_PT100 import AD7124
 from pyb import UART,ADC, Pin
 import adc_direct
 
-# 引脚分配（GPIO）
-#    TIM1   DShot600
-#         PE9, PE11, PE13, PE14
 #    膨胀阀  
 #         PE7, PE8  UART7  TX  RX
 #         PD13, PE10, PE12  STEP   Dir   EN   
@@ -15,23 +11,14 @@ import adc_direct
 
 
 #RTD
+# board 只提供总线/片选等"哑资源"；AD7124 芯片实例由 Sensor 子系统
+# 惰性创建自管（见 Sensor/read_sensors.py），避免 import 期初始化失败
+# 导致整个系统拒绝启动。
 AD7124_spi = SPIBus(1,500_000,1,1)
 AD7124_cs = SPIDev(AD7124_spi,"PG15")
-rts=AD7124(AD7124_spi.spi,AD7124_cs.cs)
 
 #LCD
-LCD_Uart = UART(1,115200)
-
-#ModeBus RTU
-BAUDRATE   = 9600
-def _silence_ms(baud):
-    """T3.5 帧间静默时间（ms），用来判断一帧是否收完"""
-    if baud > 19200:
-        return 2
-    t_char_ms = 11000.0 / baud
-    return max(2, int(t_char_ms * 3.5) + 1)
-ModeBus_Screen = UART(8,BAUDRATE, bits=8, parity=None, stop=1,
-             timeout=2, timeout_char=_silence_ms(BAUDRATE), read_buf_len=256)
+LCD_Uart = UART(1,115200)#（测试方案）
 
 REGS = (
     (0x0001, 'u16'),
@@ -45,6 +32,19 @@ REGS = (
     (0x0010, 'u32'),
 )
 
+#ModeBus RTU（正式方案）
+BAUDRATE   = 9600
+def _silence_ms(baud):
+    """T3.5 帧间静默时间（ms），用来判断一帧是否收完"""
+    if baud > 19200:
+        return 2
+    t_char_ms = 11000.0 / baud
+    return max(2, int(t_char_ms * 3.5) + 1)
+ModeBus_Screen = UART(8,BAUDRATE, bits=8, parity=None, stop=1,
+             timeout=2, timeout_char=_silence_ms(BAUDRATE), read_buf_len=256)
+
+
+
 
 #ADC
 #Presser
@@ -54,3 +54,14 @@ adc_pc3c = SmoothedADC(adc_direct.read_pc3_c, window=16)
 adc_current = ADC(Pin('PA4'))
 #backup
 adc_backup = ADC(Pin('PA5'))
+
+# Step5a: 水流开关 DI（软件占位，待硬件确认引脚后替换为真实 Pin）
+class _FlowDISwitch:
+    def __init__(self):
+        self._state = 1  # 1=通水正常，0=断开
+    def value(self, v=None):
+        if v is not None:
+            self._state = 1 if v else 0
+        return self._state
+
+di_flow = _FlowDISwitch()

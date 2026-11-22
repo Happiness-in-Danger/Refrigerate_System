@@ -60,6 +60,8 @@
 import uasyncio as asyncio
 import EXV.EXV as exv
 import Board.state as state
+# B6/D-8：过热度质量门禁年龄阈值与 Sensor/validate.py 单一来源
+from Sensor.validate import FRESHNESS_MS_GLOBAL
 
 # ─── 模块级状态 ──────────────────────────────────────────────
 _exv_ctrl     = None   # PID控制器，由main.py注入
@@ -107,6 +109,30 @@ def _sync_controller_params():
 # PID采样协程（1s周期）
 # ════════════════════════════════════════════════════════════
 
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _exv_target_override():
+    """
+    返回非 None 表示当前应使用绝对开度目标（直接定位），None 表示跑过热度 PID。
+    优先级：手动模式 > 启动/停机时 supervisor 给定目标 > RUNNING 自动 PID。
+    """
+    sys_mode = state.sys_mode
+    il = state.supervisor_interlocks
+
+    # 手动模式：hr9=1 时 EXV 受 hr14 控制（仅 RUNNING 期间允许手动覆盖）
+    if (state.manual_params.get("MANUAL_MODE_ENABLE", 0) and
+            sys_mode == state.MODE_RUNNING):
+        return state.manual_params.get("MANUAL_EXV_PCT", 0.0)
+
+    # 启动 / 停机序列：supervisor 通过 interlocks 下发目标开度
+    if sys_mode in (state.MODE_STARTUP, state.MODE_STOPPING) and il["exv_enable"]:
+        return il["exv_target_pct"]
+
+    return None
+
+
 async def pid_loop():
     global pending_delta
     while True:
@@ -117,14 +143,35 @@ async def pid_loop():
             continue
 
         _sync_controller_params()
-        sh = state.sensor_data[7]
-        if sh == 999:
-            print("[PID] 传感器故障，跳过本次计算")
+
+        target = _exv_target_override()
+        if target is not None:
+            # 直接定位模式：启动 / 停机 / 手动
+            state.exv_target_pct = float(target)
+            current = state.state_data[state.ST_VALVE_POS]
+            delta = _clamp(target - current,
+                           -_exv_ctrl.max_delta, _exv_ctrl.max_delta)
+            # 阀门空闲时才下发新目标，避免覆盖正在执行的移动
+            if not valve_busy:
+                pending_delta = delta
+            print("[EXV] 直接定位 target=%.1f%% cur=%.1f%% delta=%+.2f busy=%s" % (
+                  target, current, delta, valve_busy))
         else:
-            delta = _exv_ctrl.update(sh)
-            pending_delta += delta
-            print("[PID] SH=%.2f delta=%+.2f pending=%+.2f busy=%s" % (
-                  sh, delta, pending_delta, valve_busy))
+            # RUNNING 自动：过热度 PID；目标开度镜像为当前实际开度
+            state.exv_target_pct = state.state_data[state.ST_VALVE_POS]
+            sh_idx = state.IDX_SUPERHEAT
+            sh_q = state.sensor_quality[sh_idx]
+            sh_age = state.sensor_age_ms(sh_idx)
+            if sh_q != state.Q_OK or sh_age > FRESHNESS_MS_GLOBAL:
+                # 质量非 OK 或数据超龄：保持当前开度，跳过 update 自然冻结积分
+                print("[PID] SH 质量=%d age=%d ms，跳过本次计算（保持开度）" % (
+                      sh_q, sh_age))
+            else:
+                sh = state.sensor_checked[sh_idx]
+                delta = _exv_ctrl.update(sh)
+                pending_delta += delta
+                print("[PID] SH=%.2f delta=%+.2f pending=%+.2f busy=%s" % (
+                      sh, delta, pending_delta, valve_busy))
         await asyncio.sleep_ms(1000)
 
 
@@ -168,8 +215,11 @@ async def valve_loop():
                   pos, pct, pending_delta))
 
             if not ok:
-                print("[Valve] 驱动器故障")
-                state.set_fault('EXV_FAULT')
+                # 单一写者原则：只报事件（ST_VALVE_FAULT），不直接写 error_reg。
+                # 由 Alarm/supervisor 通过 rules.EXV_FAULT 规则消费本事件，
+                # 走延时确认 → 锁存 error_reg → 手动复位的完整链路。
+                print("[Valve] 驱动器故障，上报 ST_VALVE_FAULT 事件")
+                state.state_data[state.ST_VALVE_FAULT] = 1
         else:
             await asyncio.sleep_ms(100)
 
@@ -189,8 +239,9 @@ async def run():
 
     ok = await exv.homing()
     if not ok:
-        print("[EXV] 归零失败")
-        state.set_fault('EXV_FAULT')
+        # 单一写者原则：只报事件，不直接写 error_reg
+        print("[EXV] 归零失败，上报 ST_VALVE_FAULT 事件")
+        state.state_data[state.ST_VALVE_FAULT] = 1
         return
 
     await asyncio.gather(

@@ -2,13 +2,14 @@
 # TMC2209 单线UART驱动 + StallGuard2 防失步
 # 适用：三花 DPF(TS1) 系列 EXV，双极接法，6线中抽悬空
 #
-# 接线：
-#   STEP     → PB7   (PWM脉冲)
-#   DIR      → PB8
-#   EN       → PB9   (低电平使能)
-#   DIAG     → PB10  (StallGuard中断)
-#   PDN_UART → STM32 UART2 TX（TX通过1kΩ电阻接RX，单线半双工）
-#   MS1/MS2  → 悬空  (细分由UART控制)
+# 实际接线（与 EXV/EXV.py 中的实例配置一致）：
+#   STEP     → PD13  (TIM4_CH2 PWM 脉冲)
+#   DIR      → PE10
+#   EN       → PE12  (低电平使能)
+#   PDN_UART → UART7, 115200 baud；PE7/PE8 (TX/RX)，单线半双工
+#              TX 与 RX 通过 1kΩ 电阻连接
+#   DIAG     → 当前未连接/未启用
+#   MS1/MS2  → 悬空  (细分由 UART 配置)
 
 from pyb import Pin, Timer, UART, ExtInt
 import uasyncio as asyncio
@@ -230,7 +231,7 @@ class TMC2209:
             return False   # bit1 drv_err 或 bit2 uv_cp
         return True
 
-    # ─── PWM STEP脉冲（Timer4 Ch2 → PB7）────────────────────
+    # ─── PWM STEP脉冲（Timer4 Ch2 → PD13）────────────────────
     def _start_pwm(self, freq: int):
         self._tim = Timer(4, freq=freq)
         self._tim.channel(2, Timer.PWM,

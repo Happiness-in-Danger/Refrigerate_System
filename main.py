@@ -7,10 +7,17 @@ from HAL.PID_Plus import IncrementalController
 # from EXV.EXV import step,async_run,get_pwm_status
 import EXV.Valve_CRTL as exv_ctrl
 from HAL.ADC_sample import SmoothedADC
-from Display_Touch.Desplay import desplay
+from Display_Touch.Display import display
+import Display_Touch.modbus_slave as modbus_slave
 from Board import board
 import Board.state as state
-from Sensor.read_sensors import reads
+import Board.params_store as params_store
+from Sensor.read_sensors import reads_async
+import Alarm.supervisor as supervisor
+from HAL.Driver import UartLink, get_driver_link
+from Compressor import Compressor
+from Evaporator import Evaporator
+from Condenser import Condenser
 
 
 # ------------------------
@@ -18,21 +25,6 @@ from Sensor.read_sensors import reads
 # ------------------------
 
 import Board.state as state
-
-# ------------------------
-# Model A：Ctrl compressor speed
-# ------------------------
-async def Compressor():
-    while True:
-        if state.state_data[state.ST_SYSTEM_ENABLE]:
-            # TODO: 压缩机驱动方案未定，这里先占位
-            # 可用参数：state.compressor_control_params（Kp/Ki/Kd/setpoint等）
-            # 闭环目标量待定（吸气压力/排气压力/制冷量需求），驱动方案确定后再接入
-            pass
-        else:
-            # 系统未启动/被停止，确保压缩机保持停机状态
-            pass
-        await asyncio.sleep(0.5)
 
 # ------------------------
 # Model B：EXV open
@@ -45,34 +37,80 @@ async def Exv():
     
 
 # ------------------------
-# Model C：desplay
+# Model C：display
 # ------------------------
 async def Display():
     while True:
-        # print("[C] Display -> speed:", global_state['motor_speed'],
-        #       "valve:", global_state['valve_pos'],
-        #       "sensor:", global_state['sensor_value'])
-        desplay()
+        display()
         await asyncio.sleep(1)
 
 # ------------------------
 # Model D：read sensor and check alarm
 # ------------------------
 async def Sensor():
-    elapsed = 0
     while True:
         try:
-            board.adc_pc2.sample()
-            board.adc_pc3.sample()
-            elapsed += 12   #sample_interval_ms
-
-            if elapsed >= 200:
-                elapsed = 0
+            board.adc_pc2c.sample()
+            board.adc_pc3c.sample()
             
-            reads()
+            # Step4: 使用异步版本，不再阻塞事件循环
+            await reads_async()
         except Exception as e:
             print("[Sensor] 读取异常:", e)
         await asyncio.sleep_ms(200)
+
+
+# ------------------------
+# Model E: Driver link (Step4)
+# ------------------------
+async def DriverLink():
+    """
+    Driver link 协程（Step4：完成 Pico/ESC 通讯链路）
+    
+    职责：
+    1. 轮询接收 Pico 状态帧（poll_status）
+    2. 定期发送命令帧（send_all_commands）
+    3. 更新 link_ok 状态到 state
+    4. 将来供 Compressor/Evaporator/Condenser 消费
+    
+    当前为空载模式：ESC 全部禁用，仅维持心跳
+    """
+    link = get_driver_link()
+    if link is None:
+        print("[Driver] 链路初始化失败，协程退出")
+        return
+
+    # 确保所有 ESC 初始禁用（空载）；设备模块随后按需 enable
+    for i in range(4):
+        link.disable(i)
+    
+    last_cmd_ms = time.ticks_ms()
+    CMD_PERIOD_MS = 10  # 每 20ms 发送一次命令（50Hz，满足 Pico 100ms 超时要求）
+    
+    while True:
+        try:
+            # 1. 接收状态帧（非阻塞）
+            link_ok = link.poll_status()
+            
+            # 2. 更新到 state（P1-1 修复：供 supervisor 消费）
+            state.driver_link_ok = link_ok
+            
+            # 3. Step5a: ESC 遥测数据采集（2026-09-03 新增）
+            #    职责分离：Driver.py 负责数据换算，main.py 只负责调用
+            link.update_telemetry_to_state(state)
+            
+            # 4. 定期发送命令（空载：全部 disabled）
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_cmd_ms) >= CMD_PERIOD_MS:
+                link.send_all_commands()
+                last_cmd_ms = now
+            
+            # 5. 让出控制权（高频协程）
+            await asyncio.sleep_ms(5)
+            
+        except Exception as e:
+            print("[Driver] 链路异常:", e)
+            await asyncio.sleep_ms(100)
 
 
 # ------------------------
@@ -94,6 +132,8 @@ async def Sensor():
 # ------------------------
 async def main():
 
+    # ── Step6: 加载持久化参数（损坏/缺失则使用 state.py 默认值）──
+    params_store.load_config()
 
     # ── 初始化PID控制器 ───────────────────────────────────────
     ctrl_exv = IncrementalController(
@@ -115,10 +155,17 @@ async def main():
 
 
     await asyncio.gather(
-        Compressor(),
+        Compressor(),                    # Step5a: 压缩机执行层
+        Evaporator(),                    # Step5a: 蒸发风机执行层
+        Condenser(),                     # Step5a: 冷凝风机执行层
         Exv(),
         Display(),
         Sensor(),
+        modbus_slave.slave_loop(),
+        modbus_slave.sync_loop(),
+        supervisor.supervisor_loop(),   # Step3: Alarm 延时表 + sys_mode 状态机 + 手动复位
+        DriverLink(),                    # Step4/5a: Pico/ESC 通讯链路 + 遥测
+        params_store.loop(),             # Step6: 参数掉电保持（30s 防抖落盘）
         # Log()
     )
 

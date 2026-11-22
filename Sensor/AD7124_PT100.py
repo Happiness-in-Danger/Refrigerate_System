@@ -2,6 +2,10 @@
 from machine import SPI, Pin
 import time,math
 import gc
+try:
+    import uasyncio as asyncio
+except ImportError:
+    import asyncio
 
 class AD7124:
     REG_STATUS      = 0x00
@@ -63,6 +67,15 @@ class AD7124:
             time.sleep_ms(10)
         raise RuntimeError("转换超时")
 
+    async def _waitread_regy_async(self, timeout_ms=1000):
+        """异步等待 ADC 转换完成（Step4：去阻塞）"""
+        start = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), start) < timeout_ms:
+            if not (self.read_reg(self.REG_STATUS, 1) & 0x80):
+                return self.read_reg(self.REG_DATA, 3)
+            await asyncio.sleep_ms(2)  # 让出控制权
+        raise RuntimeError("转换超时")
+
 #     # ── 片内温度传感器 ──────────────────────────────────────────
 #     def config_internal_temp(self):
 #         self.write_reg(self.REG_CONFIG_0,    0x0FF4, 2)  # 内部参考2.5V
@@ -116,7 +129,9 @@ class AD7124:
     T_data=[0] * 5
     ch_config=(0x0022,0x0085,0x00E8,0x0148,0x01AE)
     io_val=(0b0000,0b0011,0b0110,0b1001,0b1100)
+    
     def config_pt100_chs(self):
+        """同步版本（保留兼容性）"""
         
         T_data=[0] * 5
 #         r_data=[]
@@ -151,6 +166,41 @@ class AD7124:
             time.sleep_ms(10)
             
 #         return T_data,r_data
+        return T_data
+
+    async def config_pt100_chs_async(self):
+        """异步版本（Step4：去阻塞，不再饿死事件循环）"""
+        
+        T_data=[0] * 5
+        ch_config=(0x0022,0x0085,0x00E8,0x0148,0x01AE)
+        io_val=(0b0000,0b0011,0b0110,0b1001,0b1100)
+        
+        # CONFIG_0: 内部参考REFIN, BIPOLAR, REF_BUF, AIN_BUF, PGA=16
+        self.write_reg(self.REG_CONFIG_0, 0x09E4, 2)
+        await asyncio.sleep_ms(5)
+        self.write_reg(self.REG_FILTER_0, (0b0001 << 20) | 0x180, 3)
+        await asyncio.sleep_ms(5)
+        
+        gc.collect()
+        
+        for i in range(5):
+            io_ctrl = (0b000 << 11) | (0b100 << 8) | (0b0000 << 4) | (io_val[i] << 0)
+            ch_map = ch_config[i] | 0x8000
+            self.write_reg(self.REG_IO_CONTROL1, io_ctrl, 3)
+            await asyncio.sleep_ms(5)
+            self.write_reg(self.REG_CH0_MAP + i, ch_map, 2)
+            await asyncio.sleep_ms(5)
+            #REF_EN:0,Mode:0001:Power:10
+            self.write_reg(self.REG_ADC_CONTROL, 0x0084, 2)
+            await asyncio.sleep_ms(90)
+            raw = await self._waitread_regy_async()
+            #(raw / (1 << 23) - 1) *  rref /(16* (1 << 23))
+            r = (raw - 8388608) * (5100) / (134217728)
+            T_data[i] = resistance_to_temp(r)
+            # 测完禁用
+            self.write_reg(self.REG_CH0_MAP + i, ch_config[i] & 0x7FFF, 2)
+            await asyncio.sleep_ms(10)
+            
         return T_data
 
 # ── PT100 电阻→温度 IEC60751 牛顿迭代 ──────────────────────────

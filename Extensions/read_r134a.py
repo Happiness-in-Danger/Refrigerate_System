@@ -8,13 +8,13 @@ BIN_FILE = "pt_table.bin"
 def read_record(bin_file, pressure)-> tuple:
     index = int(round((pressure - P_START) / P_STEP))
     if index < 0:
-        raise -999
+        raise ValueError(-999)   # 压力低于查表起点（原 raise -999 语义保留）
     offset = index * RECORD_SIZE
     with open(bin_file, "rb") as f:
         f.seek(offset)
         raw = f.read(RECORD_SIZE)
     if len(raw) < RECORD_SIZE:
-        raise 9999
+        raise ValueError(9999)   # 读越表尾/文件截断（原 raise 9999 语义保留）
     return struct.unpack("<14f", raw)
 
 def _poly5(coeffs, dT):

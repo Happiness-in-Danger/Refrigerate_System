@@ -79,7 +79,7 @@ STEPS_PER_PCT = FULL_STROKE / 100  # 5步 = 1%
 
 # ─── 驱动器实例 ──────────────────────────────────────────────
 _motor = TMC2209(
-    uart_id         = 2,
+    uart_id         = 7,
     step_pin        = "PD13",
     dir_pin         = "PE10",
     en_pin          = "PE12",
@@ -119,15 +119,18 @@ def check_health() -> bool:
     """
     检测驱动器和通信状态
     返回 False = UART通信失败 或 驱动器短路/过温/欠压保护触发
-    动作前调用，故障时上层应写入 Error_point 并停机
+
+    单一写者原则（ARCHITECTURE_PLAN.md §14.3-2 / AI_DEVELOPMENT_RULES.md）:
+      本函数只维护 ST_VALVE_FAULT 事件位（设备层"报事件"），
+      不得直接写 error_reg（set/clear_fault 均禁止调用）。
+      error_reg 锁存与复位由 Alarm/supervisor 通过 rules.EXV_FAULT
+      规则消费 ST_VALVE_FAULT 事件后统一处理（延时确认 + 手动复位）。
     """
     if not _motor.check_driver():
         print("[EXV] 驱动器故障（通信失败或保护触发）")
         state.state_data[state.ST_VALVE_FAULT] = 1
-        state.set_fault('EXV_FAULT')
         return False
     state.state_data[state.ST_VALVE_FAULT] = 0
-    state.clear_fault('EXV_FAULT')
     return True
 
 # ════════════════════════════════════════════════════════════

@@ -1,0 +1,171 @@
+功能码,显示地址,报文地址,代码索引,点位名称,符号,读写,单位,倍率,说明
+0x,1,0,coils[0],系统使能开关,SYSTEM_ENABLE,R/W,-,1,0=停机 1=运行
+0x,2,1,coils[1],手动模式使能,MANUAL_MODE_ENABLE,R/W,-,1,0=自动 1=手动
+0x,3,2,coils[2],压缩机转速环使能,COMP_SPEED_LOOP_ENABLE,R/W,-,1,0=禁用 1=启用
+0x,4,3,coils[3],冷凝风机转速环使能,COND_FAN_SPEED_LOOP_ENABLE,R/W,-,1,0=禁用 1=启用
+0x,5,4,coils[4],蒸发风机转速环使能,EVAP_FAN_SPEED_LOOP_ENABLE,R/W,-,1,0=禁用 1=启用
+0x,6,5,coils[5],流量检查使能（后续带水回路版本）,FLOW_ENABLE,R/W,-,1,当前空冷直膨样机保持0；接入实体DI后方可启用
+0x,7,6,coils[6],故障复位,FAULT_RESET,W,-,1,写1脉冲复位，回读恒0
+0x,8,7,coils[7],晋级模式切换,STARTUP_ADVANCE_MODE,R/W,-,1,0=定速保持 1=转速稳定性
+1x,1,0,di[0],EXV故障,EXV_FAULT,R,-,1,1=正常 0=故障
+1x,2,1,di[1],压缩机故障,COMPRESSOR_FAULT,R,-,1,1=正常 0=故障
+1x,3,2,di[2],蒸发风机故障,EVAP_FAN_FAULT,R,-,1,1=正常 0=故障
+1x,4,3,di[3],冷凝风机故障,COND_FAN_FAULT,R,-,1,1=正常 0=故障
+1x,5,4,di[4],高压保护,HIGH_PRESSURE_FAULT,R,-,1,1=正常 0=故障
+1x,6,5,di[5],低压保护,LOW_PRESSURE_FAULT,R,-,1,1=正常 0=故障
+1x,7,6,di[6],排气温度保护,HIGH_DISCHARGE_TEMP,R,-,1,1=正常 0=故障
+1x,8,7,di[7],过流保护,OVERCURRENT_FAULT,R,-,1,1=正常 0=故障
+1x,9,8,di[8],Modbus通讯故障,MODBUS_COMM_FAULT,R,-,1,1=正常 0=故障
+1x,10,9,di[9],低过热度保护,LOW_SUPERHEAT_FAULT,R,-,1,1=正常 0=故障
+1x,11,10,di[10],配置IO故障,CONFIG_IO_FAULT,R,-,1,1=正常 0=故障
+1x,12,11,di[11],吸气压力传感器故障,SUCTION_PSI_FAULT,R,-,1,1=正常 0=故障
+1x,13,12,di[12],排气压力传感器故障,DISCHARGE_PSI_FAULT,R,-,1,1=正常 0=故障
+1x,14,13,di[13],电流传感器故障,CURRENT_SENSOR_FAULT,R,-,1,1=正常 0=故障
+1x,15,14,di[14],传感器超龄故障,SENSOR_STALE_FAULT,R,-,1,1=正常 0=故障
+1x,16,15,di[15],流量保护（后续带水回路版本）,FLOW_FAULT,R,-,1,当前预留；di_flow为软件占位，不代表实体流量状态
+1x,100,99,di[99],Driver链路状态,DRIVER_LINK_OK,R,-,1,0=断开 1=正常
+1x,101,100,di[100],压缩机使能联锁,COMP_ENABLE,R,-,1,
+1x,102,101,di[101],蒸发风机使能联锁,EVAP_FAN_ENABLE,R,-,1,
+1x,103,102,di[102],冷凝风机使能联锁,COND_FAN_ENABLE,R,-,1,
+1x,104,103,di[103],EXV使能联锁,EXV_ENABLE,R,-,1,
+1x,105,104,di[104],重试锁定标志,RETRY_LOCKOUT,R,-,1,
+1x,106,105,di[105],保留_0,-,R,-,1,
+1x,107,106,di[106],保留_1,-,R,-,1,
+1x,108,107,di[107],保留_2,-,R,-,1,
+1x,109,108,di[108],保留_3,-,R,-,1,
+1x,110,109,di[109],保留_4,-,R,-,1,
+1x,111,110,di[110],保留_5,-,R,-,1,
+1x,112,111,di[111],保留_6,-,R,-,1,
+1x,113,112,di[112],保留_7,-,R,-,1,
+1x,114,113,di[113],保留_8,-,R,-,1,
+1x,115,114,di[114],保留_9,-,R,-,1,
+3x,1,0,ir[0],吸气温度,SUCTION_TEMP,R,°C,100,
+3x,2,1,ir[1],排气温度,DISCHARGE_TEMP,R,°C,100,
+3x,3,2,ir[2],蒸发器入口空气温度,INLET_TEMP,R,°C,100,
+3x,4,3,ir[3],蒸发器出口空气温度,OUTLET_TEMP,R,°C,100,容量环被控温度
+3x,5,4,ir[4],液管温度,LIQUID_TEMP,R,°C,100,
+3x,6,5,ir[5],排气压力,DISCHARGE_PRESSURE,R,bara,100,
+3x,7,6,ir[6],吸气压力,SUCTION_PRESSURE,R,bara,100,
+3x,8,7,ir[7],过热度,SUPERHEAT,R,K,10,
+3x,9,8,ir[8],过冷度,SUBCOOLING,R,K,10,
+3x,10,9,ir[9],进口焓,INLET_ENTHALPY,R,kJ/kg,100,
+3x,11,10,ir[10],出口焓,OUTLET_ENTHALPY,R,kJ/kg,100,
+3x,12,11,ir[11],EXV当前开度,EXV_POS,R,%,10,
+3x,13,12,ir[12],EXV目标开度,EXV_TARGET,R,%,10,
+3x,14,13,ir[13],整机电流,CURRENT,R,A,10,
+3x,15,14,ir[14],传感器质量码低8位,SENSOR_QUALITY_LOW,R,-,1,
+3x,16,15,ir[15],传感器质量码高2位,SENSOR_QUALITY_HIGH,R,-,1,
+3x,17,16,ir[16],传感器故障寄存器,SENSOR_FAULT_REG,R,-,1,
+3x,100,99,ir[99],系统模式,SYS_MODE,R,-,1,
+3x,101,100,ir[100],启动阶段,STARTUP_STAGE,R,-,1,
+3x,102,101,ir[101],运行子状态,RUNNING_SUBSTATE,R,-,1,
+3x,110,109,ir[109],故障寄存器低16位,ERROR_REG_LOW,R,-,1,
+3x,111,110,ir[110],故障寄存器高16位,ERROR_REG_HIGH,R,-,1,
+3x,200,199,ir[199],压缩机当前油门,COMP_THROTTLE_CMD,R,-,1,
+3x,201,200,ir[200],压缩机当前转速,COMP_RPM,R,rpm,1,
+3x,202,201,ir[201],蒸发风机当前油门,EVAP_FAN_THROTTLE_CMD,R,-,1,
+3x,203,202,ir[202],蒸发风机当前转速,EVAP_FAN_RPM,R,rpm,1,
+3x,204,203,ir[203],冷凝风机当前油门,COND_FAN_THROTTLE_CMD,R,-,1,
+3x,205,204,ir[204],冷凝风机当前转速,COND_FAN_RPM,R,rpm,1,
+3x,206,205,ir[205],保留_6,-,R,-,-,
+3x,207,206,ir[206],ESC0压缩机转速,ESC0_RPM,R,rpm,1,
+3x,208,207,ir[207],ESC0压缩机温度,ESC0_TEMP,R,°C,1,
+3x,209,208,ir[208],ESC0压缩机电压,ESC0_VOLTAGE,R,V,10,
+3x,210,209,ir[209],ESC0压缩机电流,ESC0_CURRENT,R,A,10,
+3x,211,210,ir[210],ESC1蒸发风机转速,ESC1_RPM,R,rpm,1,
+3x,212,211,ir[211],ESC1蒸发风机温度,ESC1_TEMP,R,°C,1,
+3x,213,212,ir[212],ESC1蒸发风机电压,ESC1_VOLTAGE,R,V,10,
+3x,214,213,ir[213],ESC1蒸发风机电流,ESC1_CURRENT,R,A,10,
+3x,215,214,ir[214],ESC2冷凝风机转速,ESC2_RPM,R,rpm,1,
+3x,216,215,ir[215],ESC2冷凝风机温度,ESC2_TEMP,R,°C,1,
+3x,217,216,ir[216],ESC2冷凝风机电压,ESC2_VOLTAGE,R,V,10,
+3x,218,217,ir[217],ESC2冷凝风机电流,ESC2_CURRENT,R,A,10,
+3x,219,218,ir[218],ESC3备用转速,ESC3_RPM,R,rpm,1,
+3x,220,219,ir[219],ESC3备用温度,ESC3_TEMP,R,°C,1,
+3x,221,220,ir[220],ESC3备用电压,ESC3_VOLTAGE,R,V,10,
+3x,222,221,ir[221],ESC3备用电流,ESC3_CURRENT,R,A,10,
+3x,223,222,ir[222],L1限载动作码,LIMIT_ACTIONS,R,-,1,
+4x,1,0,hr[0],过热度PID_Kp,SH_PID_KP,R/W,-,100,Kp=寄存器/100
+4x,2,1,hr[1],过热度PID_Ki,SH_PID_KI,R/W,-,100,Ki=寄存器/100
+4x,3,2,hr[2],过热度PID_Kd,SH_PID_KD,R/W,-,100,Kd=寄存器/100
+4x,4,3,hr[3],过热度设定值,SH_SETPOINT,R/W,K,10,
+4x,5,4,hr[4],过热度误差阈值,SH_ERROR_THRESHOLD,R/W,K,10,
+4x,6,5,hr[5],过热度死区,SH_DEADBAND,R/W,K,10,
+4x,7,6,hr[6],过热度最大变化量,SH_MAX_DELTA,R/W,-,1,EXV单次最大变化
+4x,8,7,hr[7],保留,-,-,-,-,
+4x,16,15,hr[15],容量环PID_Kp,CAP_PID_KP,R/W,-,100,
+4x,17,16,hr[16],容量环PID_Ki,CAP_PID_KI,R/W,-,100,
+4x,18,17,hr[17],容量环PID_Kd,CAP_PID_KD,R/W,-,100,
+4x,19,18,hr[18],容量环设定温度,CAP_SETPOINT,R/W,°C,100,
+4x,20,19,hr[19],容量环死区,CAP_DEADBAND,R/W,K,10,
+4x,21,20,hr[20],容量环最小油门,CAP_THROTTLE_MIN,R/W,-,1,48-2047
+4x,22,21,hr[21],容量环最大油门,CAP_THROTTLE_MAX,R/W,-,1,48-2047
+4x,23,22,hr[22],容量环最大变化量,CAP_MAX_DELTA,R/W,-,1,
+4x,24,23,hr[23],容量环周期,CAP_LOOP_PERIOD_S,R/W,s,1,
+4x,25,24,hr[24],冷凝压力环PID_Kp,COND_PID_KP,R/W,-,100,
+4x,26,25,hr[25],冷凝压力环PID_Ki,COND_PID_KI,R/W,-,100,
+4x,27,26,hr[26],冷凝压力环PID_Kd,COND_PID_KD,R/W,-,100,
+4x,28,27,hr[27],冷凝压力环最小油门,COND_THROTTLE_MIN,R/W,-,1,48-2047
+4x,29,28,hr[28],冷凝压力环最大油门,COND_THROTTLE_MAX,R/W,-,1,48-2047
+4x,30,29,hr[29],冷凝压力环最大变化量,COND_MAX_DELTA,R/W,-,1,
+4x,31,30,hr[30],高压停机阈值,HP_MAX,R/W,bara,100,L2 停机
+4x,32,31,hr[31],高压降容阈值,HP_UNLOAD,R/W,bara,100,L1 降容
+4x,33,32,hr[32],高压告警阈值,HP_WARN,R/W,bara,100,L0 告警
+4x,34,33,hr[33],冷凝压力目标,HP_TARGET,R/W,bara,100,
+4x,50,49,hr[49],低压停机阈值,LP_MIN,R/W,bara,100,L2 停机
+4x,51,50,hr[50],低压降容阈值,LP_UNLOAD,R/W,bara,100,L1 降容
+4x,52,51,hr[51],低压告警阈值,LP_WARN,R/W,bara,100,L0 告警
+4x,53,52,hr[52],低压回升迟滞,LP_HYST,R/W,bara,100,
+4x,54,53,hr[53],电流停机阈值,I_MAX,R/W,A,10,L2 停机
+4x,55,54,hr[54],电流降容阈值,I_UNLOAD,R/W,A,10,L1 降容
+4x,56,55,hr[55],电流禁升阈值,I_LIMIT,R/W,A,10,L1 禁升速
+4x,57,56,hr[56],电流告警阈值,I_WARN,R/W,A,10,L0 告警
+4x,58,57,hr[57],排气温度停机阈值,TD_TRIP,R/W,°C,100,L2 停机
+4x,59,58,hr[58],排气温度降容阈值,TD_UNLOAD,R/W,°C,100,L1 降容
+4x,60,59,hr[59],排气温度告警阈值,TD_WARN,R/W,°C,100,L0 告警
+4x,61,60,hr[60],最小过热度,SH_MIN,R/W,K,10,
+4x,62,61,hr[61],临界过热度,SH_CRIT,R/W,K,10,
+4x,63,62,hr[62],保留_2,-,-,-,-,
+4x,100,99,hr[99],延时槽0,DELAY_SLOT_0,R/W,s,1,0-3600
+4x,101,100,hr[100],延时槽1,DELAY_SLOT_1,R/W,s,1,0-3600
+4x,102,101,hr[101],延时槽2,DELAY_SLOT_2,R/W,s,1,0-3600
+4x,103,102,hr[102],延时槽3,DELAY_SLOT_3,R/W,s,1,0-3600
+4x,104,103,hr[103],延时槽4,DELAY_SLOT_4,R/W,s,1,0-3600
+4x,105,104,hr[104],延时槽5,DELAY_SLOT_5,R/W,s,1,0-3600
+4x,106,105,hr[105],延时槽6,DELAY_SLOT_6,R/W,s,1,0-3600
+4x,107,106,hr[106],延时槽7,DELAY_SLOT_7,R/W,s,1,0-3600
+4x,120,119,hr[119],EXV启动开度,EXV_START_POS,R/W,%,10,
+4x,121,120,hr[120],压缩机启动油门,COMP_START_THROTTLE,R/W,-,1,48-2047
+4x,122,121,hr[121],冷凝风机启动油门,COND_FAN_START_THROTTLE,R/W,-,1,48-2047
+4x,123,122,hr[122],蒸发风机启动油门,EVAP_FAN_START_THROTTLE,R/W,-,1,48-2047
+4x,130,129,hr[129],EXV到压缩机延时槽号,EXV_TO_COMP_DELAY_SLOT,R/W,-,1,0-7
+4x,131,130,hr[130],停机压缩机延时槽号,COMP_STOP_DELAY_SLOT,R/W,-,1,0-7
+4x,132,131,hr[131],停机风机延时槽号,FAN_STOP_DELAY_SLOT,R/W,-,1,0-7
+4x,150,149,hr[149],压缩机启动延时,COMP_START_DELAY_S,R/W,s,1,
+4x,151,150,hr[150],压缩机转速稳定窗口,COMP_RPM_STABILITY_WINDOW_S,R/W,s,1,
+4x,152,151,hr[151],压缩机转速稳定阈值,COMP_RPM_STABILITY_THRESHOLD,R/W,rpm,1,
+4x,153,152,hr[152],压缩机最大转速,COMP_RPM_MAX,R/W,rpm,1,
+4x,154,153,hr[153],压缩机转速环Kp,COMP_SPEED_LOOP_KP,R/W,-,100,
+4x,155,154,hr[154],压缩机转速环Ki,COMP_SPEED_LOOP_KI,R/W,-,100,
+4x,156,155,hr[155],压缩机转速环死区,COMP_SPEED_LOOP_DEADBAND,R/W,rpm,1,
+4x,157,156,hr[156],压缩机最大调节量,COMP_THROTTLE_MAX_ADJUST,R/W,-,1,
+4x,180,179,hr[179],风机最大转速,FAN_RPM_MAX,R/W,rpm,1,
+4x,181,180,hr[180],风机转速环Kp,FAN_SPEED_LOOP_KP,R/W,-,100,
+4x,182,181,hr[181],风机转速环Ki,FAN_SPEED_LOOP_KI,R/W,-,100,
+4x,183,182,hr[182],风机转速环死区,FAN_SPEED_LOOP_DEADBAND,R/W,rpm,1,
+4x,184,183,hr[183],风机最大调节量,FAN_THROTTLE_MAX_ADJUST,R/W,-,1,
+4x,185,184,hr[184],压缩机回油最低油门,COMP_OIL_RETURN_THROTTLE,R/W,-,1,48-500
+4x,186,185,hr[185],降容速率,UNLOAD_RATE_THROTTLE_S,R/W,-,1,throttle/s
+4x,187,186,hr[186],保留_3,-,-,-,-,
+4x,188,187,hr[187],保留_4,-,-,-,-,
+4x,189,188,hr[188],保留_5,-,-,-,-,
+4x,200,199,hr[199],最短运行时间,MIN_ON_S,R/W,s,1,
+4x,201,200,hr[200],最短停机间隔,MIN_OFF_S,R/W,s,1,
+4x,202,201,hr[201],每小时最大启动次数,MAX_STARTS_PER_HOUR,R/W,-,1,1-10
+4x,203,202,hr[202],最大重试次数,RETRY_MAX,R/W,-,1,1-10
+4x,204,203,hr[203],重试窗口,RETRY_WINDOW_S,R/W,s,1,
+4x,205,204,hr[204],Modbus无帧超时,MODBUS_TIMEOUT_S,R/W,s,1,
+4x,220,219,hr[219],压缩机手动油门,MANUAL_COMP_THROTTLE,R/W,-,1,0-2047
+4x,221,220,hr[220],冷凝风机手动油门,MANUAL_COND_FAN_THROTTLE,R/W,-,1,0-2047
+4x,222,221,hr[221],蒸发风机用户油门,EVAP_FAN_USER_THROTTLE,R/W,-,1,0-2047
+4x,223,222,hr[222],EXV手动开度,MANUAL_EXV_PCT,R/W,%,10,0-1000
