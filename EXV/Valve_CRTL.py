@@ -102,6 +102,7 @@ def _sync_controller_params():
      _exv_ctrl.setpoint, _exv_ctrl.deadband, _exv_ctrl.max_delta,
      _exv_ctrl.error_threshold, _exv_ctrl.aggr_mode,
      _exv_ctrl.tau, _exv_ctrl.T_goal) = params
+    _exv_ctrl.K_aggr = 3.0 * _exv_ctrl.Kp
     _synced_params = params
 
 
@@ -139,6 +140,8 @@ async def pid_loop():
         if not state.state_data[state.ST_SYSTEM_ENABLE]:
             # Do not retain commands generated before the system was stopped.
             pending_delta = 0.0
+            if _exv_ctrl is not None:
+                _exv_ctrl.reset()
             await asyncio.sleep_ms(1000)
             continue
 
@@ -146,6 +149,8 @@ async def pid_loop():
 
         target = _exv_target_override()
         if target is not None:
+            # Avoid using derivative/error history from before manual positioning.
+            _exv_ctrl.reset()
             # 直接定位模式：启动 / 停机 / 手动
             state.exv_target_pct = float(target)
             current = state.state_data[state.ST_VALVE_POS]
@@ -163,7 +168,9 @@ async def pid_loop():
             sh_q = state.sensor_quality[sh_idx]
             sh_age = state.sensor_age_ms(sh_idx)
             if sh_q != state.Q_OK or sh_age > FRESHNESS_MS_GLOBAL:
-                # 质量非 OK 或数据超龄：保持当前开度，跳过 update 自然冻结积分
+                # Quality/staleness gaps break the sample interval; discard PID
+                # history so the next valid sample cannot create a derivative jump.
+                _exv_ctrl.reset()
                 print("[PID] SH 质量=%d age=%d ms，跳过本次计算（保持开度）" % (
                       sh_q, sh_age))
             else:

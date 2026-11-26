@@ -38,10 +38,13 @@ _rpm_ctrl = IncrementalController(
     setpoint=0.0,
     deadband=state.fan_speed_loop_params["deadband"],
     max_delta=state.fan_speed_loop_params["throttle_max_adjust"],
+    aggr_mode="off",
+    output_sign=-1.0,
 )
 
 _current_throttle = 0
 _last_pres_ms = 0
+_last_rpm_ms = None
 
 
 def _sync_pres_params():
@@ -51,9 +54,42 @@ def _sync_pres_params():
     _pres_ctrl.Ki = cp["Ki"]
     _pres_ctrl.Kd = cp["Kd"]
     _pres_ctrl.setpoint = cp["setpoint"]
-    _pres_ctrl.deadband = cp["deadband"]
-    _pres_ctrl.max_delta = cp["max_delta"]
+    _pres_ctrl.deadband = max(0.0, cp["deadband"])
+    _pres_ctrl.max_delta = abs(cp["max_delta"])
     _pres_ctrl.error_threshold = cp.get("error_threshold", 5.0)
+    _pres_ctrl.aggr_mode = cp.get("aggr_mode", "togoal")
+    _pres_ctrl.tau = max(0.0, cp.get("tau", 3.0))
+    _pres_ctrl.T_goal = max(1e-6, cp.get("T_goal", 5.0))
+    period_s = cp.get("period_s", 2.0)
+    _pres_ctrl.dt = period_s if period_s > 0 else 2.0
+    _pres_ctrl.K_aggr = 3.0 * _pres_ctrl.Kp
+
+
+def _sync_rpm_params():
+    """Apply persisted/Modbus fan speed-loop settings to the live controller."""
+    cp = state.fan_speed_loop_params
+    _rpm_ctrl.Kp = cp["Kp"]
+    _rpm_ctrl.Ki = cp["Ki"]
+    _rpm_ctrl.Kd = cp["Kd"]
+    _rpm_ctrl.deadband = max(0.0, cp["deadband"])
+    _rpm_ctrl.max_delta = abs(cp["throttle_max_adjust"])
+    _rpm_ctrl.aggr_mode = "off"
+    _rpm_ctrl.output_sign = -1.0
+
+
+def _rpm_update_due(now_ms):
+    """Run the speed PID at its configured interval, quantized by the 500ms task."""
+    global _last_rpm_ms
+    period_ms = max(500, int(state.fan_speed_loop_params.get("period_s", 0.5) * 1000))
+    if (_last_rpm_ms is not None and
+            time.ticks_diff(now_ms, _last_rpm_ms) < period_ms):
+        return False
+    if _last_rpm_ms is None:
+        _rpm_ctrl.dt = max(0.5, period_ms / 1000.0)
+    else:
+        _rpm_ctrl.dt = max(1e-6, time.ticks_diff(now_ms, _last_rpm_ms) / 1000.0)
+    _last_rpm_ms = now_ms
+    return True
 
 
 def _throttle_to_rpm_cmd(throttle):
@@ -65,22 +101,15 @@ def _throttle_to_rpm_cmd(throttle):
 
 
 def _reset_pid():
-    global _current_throttle
+    global _current_throttle, _last_rpm_ms
     _current_throttle = 0
-    _rpm_ctrl.integral = 0.0
-    _rpm_ctrl.prev_meas = None
-    _rpm_ctrl.dx_filtered = 0.0
-    _rpm_ctrl.prev_dx_filtered = 0.0
-    _rpm_ctrl.ddx_filtered = 0.0
+    _rpm_ctrl.reset()
+    _last_rpm_ms = None
 
 
 def _reset_pres_pid():
     """冷凝压力环积分清零"""
-    _pres_ctrl.integral = 0.0
-    _pres_ctrl.prev_meas = None
-    _pres_ctrl.dx_filtered = 0.0
-    _pres_ctrl.prev_dx_filtered = 0.0
-    _pres_ctrl.ddx_filtered = 0.0
+    _pres_ctrl.reset()
 
 
 def _update_pressure_loop(now_ms):
@@ -98,12 +127,14 @@ def _update_pressure_loop(now_ms):
     if (state.manual_params.get("MANUAL_MODE_ENABLE", 0) or
             state.running_substate == state.RUNNING_THERMO_OFF or
             state.sys_mode != state.MODE_RUNNING):
+        _reset_pres_pid()
         return
 
     idx = state.IDX_DISCHARGE_PSI
     q = state.sensor_quality[idx]
     age = state.sensor_age_ms(idx)
     if q != state.Q_OK or age > 2000:
+        _reset_pres_pid()
         return
 
     pres = state.sensor_checked[idx]
@@ -124,7 +155,7 @@ def _update_pressure_loop(now_ms):
 
 async def Condenser():
     """冷凝风机 0.5s 周期执行协程"""
-    global _current_throttle
+    global _current_throttle, _last_rpm_ms
     while True:
         now_ms = time.ticks_ms()
         link = get_driver_link()
@@ -152,8 +183,11 @@ async def Condenser():
 
         # 发送到 ESC2
         if link is not None and enabled and rpm_cmd > 0 and state.driver_link_ok:
+            _sync_rpm_params()
             if not speed_loop_enabled:
                 # 转速环禁用：开环油门直通
+                _rpm_ctrl.reset()
+                _last_rpm_ms = None
                 _current_throttle = max(
                     state.ESC_THROTTLE_MIN,
                     min(state.ESC_THROTTLE_MAX, throttle_cmd)
@@ -164,9 +198,13 @@ async def Condenser():
 
                 rpm_fb = state.state_data[state.ST_ESC2_RPM]
                 if rpm_fb != 999:
-                    _rpm_ctrl.setpoint = rpm_cmd
-                    delta = _rpm_ctrl.update(rpm_fb)
-                    _current_throttle += delta
+                    if _rpm_update_due(now_ms):
+                        _rpm_ctrl.setpoint = rpm_cmd
+                        delta = _rpm_ctrl.update(rpm_fb)
+                        _current_throttle += delta
+                else:
+                    _rpm_ctrl.reset()
+                    _last_rpm_ms = None
 
                 _current_throttle = max(
                     state.ESC_THROTTLE_MIN,

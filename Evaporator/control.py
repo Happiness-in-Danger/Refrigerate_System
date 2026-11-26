@@ -7,6 +7,7 @@
 # - 设备模块内部实现转速环，根据 ST_ESC1_RPM 反馈调节油门
 # - 故障检测：使能且有目标转速但反馈 rpm 无效/过低时置 ST_EVAP_FAN_FAULT
 
+import time
 import uasyncio as asyncio
 import Board.state as state
 from HAL.Driver import get_driver_link
@@ -22,9 +23,39 @@ _rpm_ctrl = IncrementalController(
     setpoint=0.0,
     deadband=state.fan_speed_loop_params["deadband"],
     max_delta=state.fan_speed_loop_params["throttle_max_adjust"],
+    aggr_mode="off",
+    output_sign=-1.0,
 )
 
 _current_throttle = 0
+_last_rpm_ms = None
+
+
+def _sync_rpm_params():
+    """Apply persisted/Modbus fan speed-loop settings to the live controller."""
+    cp = state.fan_speed_loop_params
+    _rpm_ctrl.Kp = cp["Kp"]
+    _rpm_ctrl.Ki = cp["Ki"]
+    _rpm_ctrl.Kd = cp["Kd"]
+    _rpm_ctrl.deadband = max(0.0, cp["deadband"])
+    _rpm_ctrl.max_delta = abs(cp["throttle_max_adjust"])
+    _rpm_ctrl.aggr_mode = "off"
+    _rpm_ctrl.output_sign = -1.0
+
+
+def _rpm_update_due(now_ms):
+    """Run the speed PID at its configured interval, quantized by the 500ms task."""
+    global _last_rpm_ms
+    period_ms = max(500, int(state.fan_speed_loop_params.get("period_s", 0.5) * 1000))
+    if (_last_rpm_ms is not None and
+            time.ticks_diff(now_ms, _last_rpm_ms) < period_ms):
+        return False
+    if _last_rpm_ms is None:
+        _rpm_ctrl.dt = max(0.5, period_ms / 1000.0)
+    else:
+        _rpm_ctrl.dt = max(1e-6, time.ticks_diff(now_ms, _last_rpm_ms) / 1000.0)
+    _last_rpm_ms = now_ms
+    return True
 
 
 def _throttle_to_rpm_cmd(throttle):
@@ -36,19 +67,17 @@ def _throttle_to_rpm_cmd(throttle):
 
 
 def _reset_pid():
-    global _current_throttle
+    global _current_throttle, _last_rpm_ms
     _current_throttle = 0
-    _rpm_ctrl.integral = 0.0
-    _rpm_ctrl.prev_meas = None
-    _rpm_ctrl.dx_filtered = 0.0
-    _rpm_ctrl.prev_dx_filtered = 0.0
-    _rpm_ctrl.ddx_filtered = 0.0
+    _rpm_ctrl.reset()
+    _last_rpm_ms = None
 
 
 async def Evaporator():
     """蒸发风机 0.5s 周期执行协程"""
-    global _current_throttle
+    global _current_throttle, _last_rpm_ms
     while True:
+        now_ms = time.ticks_ms()
         link = get_driver_link()
 
         il = state.supervisor_interlocks
@@ -67,8 +96,11 @@ async def Evaporator():
 
         # 发送到 ESC1
         if link is not None and enabled and rpm_cmd > 0 and state.driver_link_ok:
+            _sync_rpm_params()
             if not speed_loop_enabled:
                 # 转速环禁用：开环油门直通
+                _rpm_ctrl.reset()
+                _last_rpm_ms = None
                 _current_throttle = max(
                     state.ESC_THROTTLE_MIN,
                     min(state.ESC_THROTTLE_MAX, throttle_cmd)
@@ -79,9 +111,13 @@ async def Evaporator():
 
                 rpm_fb = state.state_data[state.ST_ESC1_RPM]
                 if rpm_fb != 999:
-                    _rpm_ctrl.setpoint = rpm_cmd
-                    delta = _rpm_ctrl.update(rpm_fb)
-                    _current_throttle += delta
+                    if _rpm_update_due(now_ms):
+                        _rpm_ctrl.setpoint = rpm_cmd
+                        delta = _rpm_ctrl.update(rpm_fb)
+                        _current_throttle += delta
+                else:
+                    _rpm_ctrl.reset()
+                    _last_rpm_ms = None
 
                 _current_throttle = max(
                     state.ESC_THROTTLE_MIN,

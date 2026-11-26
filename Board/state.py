@@ -460,9 +460,9 @@ protect_params = {
     "UNLOAD_RATE_THROTTLE_S":   50,    # 降容速率 throttle/s
 
     # Step5b: 转速环使能开关（设备模块内读取）
-    "COMP_SPEED_LOOP_ENABLE": 1,
-    "COND_FAN_SPEED_LOOP_ENABLE": 1,
-    "EVAP_FAN_SPEED_LOOP_ENABLE": 1,
+    "COMP_SPEED_LOOP_ENABLE": 0,
+    "COND_FAN_SPEED_LOOP_ENABLE": 0,
+    "EVAP_FAN_SPEED_LOOP_ENABLE": 0,
 
     # Step5b: 防短循环与温控循环
     "MIN_ON_S": 180.0,            # 压缩机启动后最短运行时间

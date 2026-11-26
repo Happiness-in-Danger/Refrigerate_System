@@ -80,6 +80,10 @@ def apply_params(params):
     slots = state.protect_params.get("delay_slots")
     if not isinstance(slots, list) or len(slots) != 8:
         state.protect_params["delay_slots"] = list(_DEFAULT_DELAY_SLOTS)
+    # Keep the run-time limits used by throttle-to-RPM mapping in sync with
+    # their persisted parameter values (Modbus writes already update both).
+    state.state_data[state.ST_MOTOR_SPEED_MAX] = state.comp_speed_loop_params["rpm_max"]
+    state.state_data[state.ST_FAN_SPEED_MAX] = state.fan_speed_loop_params["rpm_max"]
     # ESC 遥测配置从持久化回写后，同步回驱动使用的列表
     if hasattr(state, "sync_esc_telemetry_cfg"):
         state.sync_esc_telemetry_cfg()

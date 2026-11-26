@@ -420,9 +420,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | Q16 | `W` 后用全量 `Q` 刷新是否过慢，是否改为只返回被改动及其同步字段 | 待实机观察 |
 | Q17 | `LIMIT_ACTIONS` 和 `SENSOR_FAULT_REG` 的位定义 | 已补全，见附录 D |
 | Q18 | `EVAP_FAN_CMD`、`COND_FAN_CMD` 的数据来源是各自转速环的目标转速 `rpm_cmd`，由 `_throttle_to_rpm_cmd` 算出：`rpm_cmd = int(throttle_cmd / ESC_THROTTLE_MAX × ST_FAN_SPEED_MAX)`，油门为 0 时为 0。`throttle_cmd`：蒸发风机，RUNNING 且使能时取 `EVAP_FAN_USER_THROTTLE`，否则取 `supervisor_interlocks['evap_fan_throttle_cmd']`（`Evaporator/control.py:58-61`）；冷凝风机，取 `supervisor_interlocks['cond_fan_throttle_cmd']`，RUNNING 且 `MANUAL_MODE_ENABLE=1` 时改取 `MANUAL_COND_FAN_THROTTLE`，高压限载 `ACT_COND_FAN_MAX` 时强制为 `ESC_THROTTLE_MAX`（`Condenser/control.py:134-148`）。现状：`rpm_cmd` 是每 0.5 s 循环内的局部变量，没有写入 `state_data`；槽位 `ST_EVAP_FAN_SPEED_CMD`、`ST_COND_FAN_SPEED_CMD` 注释为“转速指令”，只有 Modbus 的 hr221 写过（写入的是用户油门，单位不符）。压缩机同理有 `rpm_cmd`，但 `state.py` 没有对应槽位 | 待确认：固件在两个风机模块的 `rpm_cmd` 算出后各加一行写入对应槽位，HMI 保留这两点，不再沿用 hr221 的混用；若还要显示压缩机目标转速，需新增 `COMP_RPM_CMD`（建议用模块变量 `comp_rpm_cmd`，与 `comp_throttle_out` 同类，动态清单 75 变 76）。写入前这两点显示 0，界面标注“固件未发布” |
-| Q19 | 备注，不需决定：18 个参数在现有固件下需重启才生效（附录 C.2）：`CAP_/COND_` 的 `AGGR_MODE`、`TAU`、`T_GOAL`，以及 `CSL_/FSL_` 的 `KP`、`KI`、`KD`、`PERIOD_S`、`DEADBAND`、`THROTTLE_MAX_ADJUST` | 按现状处理：不改固件，界面对这些点位在写入成功后提示“已保存，重启后生效”。以后固件补上热同步，只需把 `points.csv` 的“生效”列由 B 改为 H |
-| Q20 | 容量环和冷凝压力环：PID 的 `dt` 在构造时固定为 10 s 和 2 s（`Compressor/control.py:22`、`Condenser/control.py:23`），而环的执行间隔每次读取 `CAP_PERIOD_S`、`COND_PERIOD_S`（`Compressor/control.py:90`、`Condenser/control.py:89`）。`dt` 参与积分和微分计算（`HAL/PID_Plus.py:232,251,262`），周期改动后步长与实际间隔不符。转速环相反：执行间隔固定 0.5 s，`CSL_PERIOD_S`、`FSL_PERIOD_S` 只决定构造时的 `dt`（默认 0.5，与执行间隔一致），改动既无意义又需重启 | 待用户核对。核对前：界面对 `CAP_PERIOD_S`、`COND_PERIOD_S`、`CSL_PERIOD_S`、`FSL_PERIOD_S` 标注“不建议修改”，附录 E 不推荐应用 `CAP_PERIOD_S` 的范围；固件侧可选做法是在环里同步 `ctrl.dt = period_s` |
-| Q21 | `CSL_RPM_MAX`、`FSL_RPM_MAX` 各有两份：保存值（参数字典里的 `rpm_max`，落盘到 `config.json`）和运行值（`ST_MOTOR_SPEED_MAX`、`ST_FAN_SPEED_MAX`，转速环和 `_throttle_to_rpm_cmd` 实际读取）。写入命令会同时更新两份（6.3）；开机时 `params_store.load_config()` 经 `apply_params()` 只把保存值写进参数字典（`Board/params_store.py` 的 `apply_params`），运行值保持 `state.py` 默认的 6000 和 3000。后果：重启后 `CSL_RPM_MAX` 显示已保存值，`MOTOR_SPEED_MAX` 却是 6000，转速环按 6000 限幅 | 待用户决定。建议开机加载后立即把两个保存值同步到运行值（固件改动很小，涉及转速限值，实现 HMI 前应先修）。修复前不需要固件改动的缓解：界面并排显示保存值和运行值，不一致时标红 |
+| Q19 | 原注明有 18 个 PID 参数在运行中修改需重启；现已增加控制器参数热同步：容量环/冷凝压力环同步 Kp/Ki/Kd、设定值、死区、限幅、aggressive 参数和采样周期；三个转速环同步 Kp/Ki/Kd、死区、限幅和周期 | 已修复。转速环周期按 500ms 控制任务的实际采样间隔运行，最小执行周期为 500ms |
+| Q20 | PID 的 `dt` 必须与实际两次采样间隔一致；外环周期修改、传感器质量中断以及转速环周期调整都可能造成误差 | 已修复：容量环/冷凝压力环在同步参数时更新 `dt`；转速环按配置周期调度，并用实际采样间隔更新 `dt`；传感器失效或控制暂停时清除历史状态 |
+| Q21 | `CSL_RPM_MAX`、`FSL_RPM_MAX` 各有保存值（参数字典）和运行值（`ST_MOTOR_SPEED_MAX`、`ST_FAN_SPEED_MAX`）两份，映射目标转速时读取运行值 | 已修复：`params_store.apply_params()` 在加载参数后同步两组运行值 |
 
 ## 12. 取值范围
 
@@ -588,9 +588,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | S5_TIMEOUT_MS | 30000 | int | 状态 S5 超时，ms（晋级判据） |
 | COMP_OIL_RETURN_THROTTLE | 200 | int | 回油最低油门 |
 | UNLOAD_RATE_THROTTLE_S | 50 | int | 降容速率，油门/s |
-| COMP_SPEED_LOOP_ENABLE | 1 | int | 压缩机转速环开关 |
-| COND_FAN_SPEED_LOOP_ENABLE | 1 | int | 冷凝风机转速环开关 |
-| EVAP_FAN_SPEED_LOOP_ENABLE | 1 | int | 蒸发风机转速环开关 |
+| COMP_SPEED_LOOP_ENABLE | 0 | int | 压缩机转速环开关 |
+| COND_FAN_SPEED_LOOP_ENABLE | 0 | int | 冷凝风机转速环开关 |
+| EVAP_FAN_SPEED_LOOP_ENABLE | 0 | int | 蒸发风机转速环开关 |
 | MIN_ON_S | 180.0 | float | 压缩机最短运行时间，s |
 | MIN_OFF_S | 300.0 | float | 压缩机最短停机间隔，s |
 | MAX_STARTS_PER_HOUR | 6 | int | 每小时最大启动次数 |

@@ -971,9 +971,9 @@ protect_params = {
     "UNLOAD_RATE_THROTTLE_S": 50,            # 降容速率 throttle/s
     
     # 转速环开关（v3.3 新增）
-    "COMP_SPEED_LOOP_ENABLE": 1,             # 压缩机转速环使能（0=禁用，1=启用）
-    "COND_FAN_SPEED_LOOP_ENABLE": 1,         # 冷凝风机转速环使能（0=禁用，1=启用）
-    "EVAP_FAN_SPEED_LOOP_ENABLE": 1,         # 蒸发风机转速环使能（0=禁用，1=启用）
+    "COMP_SPEED_LOOP_ENABLE": 0,             # 压缩机转速环使能（0=禁用，1=启用）
+    "COND_FAN_SPEED_LOOP_ENABLE": 0,         # 冷凝风机转速环使能（0=禁用，1=启用）
+    "EVAP_FAN_SPEED_LOOP_ENABLE": 0,         # 蒸发风机转速环使能（0=禁用，1=启用）
     
     # 重试锁定
     "RETRY_MAX": 3,                          # 最大重试次数
