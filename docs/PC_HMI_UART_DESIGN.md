@@ -420,9 +420,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | Q16 | `W` 后用全量 `Q` 刷新是否过慢，是否改为只返回被改动及其同步字段 | 待实机观察 |
 | Q17 | `LIMIT_ACTIONS` 和 `SENSOR_FAULT_REG` 的位定义 | 已补全，见附录 D |
 | Q18 | `EVAP_FAN_CMD`、`COND_FAN_CMD` 的数据来源是各自转速环的目标转速 `rpm_cmd`，由 `_throttle_to_rpm_cmd` 算出：`rpm_cmd = int(throttle_cmd / ESC_THROTTLE_MAX × ST_FAN_SPEED_MAX)`，油门为 0 时为 0。`throttle_cmd`：蒸发风机，RUNNING 且使能时取 `EVAP_FAN_USER_THROTTLE`，否则取 `supervisor_interlocks['evap_fan_throttle_cmd']`（`Evaporator/control.py:58-61`）；冷凝风机，取 `supervisor_interlocks['cond_fan_throttle_cmd']`，RUNNING 且 `MANUAL_MODE_ENABLE=1` 时改取 `MANUAL_COND_FAN_THROTTLE`，高压限载 `ACT_COND_FAN_MAX` 时强制为 `ESC_THROTTLE_MAX`（`Condenser/control.py:134-148`）。现状：`rpm_cmd` 是每 0.5 s 循环内的局部变量，没有写入 `state_data`；槽位 `ST_EVAP_FAN_SPEED_CMD`、`ST_COND_FAN_SPEED_CMD` 注释为“转速指令”，只有 Modbus 的 hr221 写过（写入的是用户油门，单位不符）。压缩机同理有 `rpm_cmd`，但 `state.py` 没有对应槽位 | 待确认：固件在两个风机模块的 `rpm_cmd` 算出后各加一行写入对应槽位，HMI 保留这两点，不再沿用 hr221 的混用；若还要显示压缩机目标转速，需新增 `COMP_RPM_CMD`（建议用模块变量 `comp_rpm_cmd`，与 `comp_throttle_out` 同类，动态清单 75 变 76）。写入前这两点显示 0，界面标注“固件未发布” |
-| Q19 | 原注明有 18 个 PID 参数在运行中修改需重启；现已增加控制器参数热同步：容量环/冷凝压力环同步 Kp/Ki/Kd、设定值、死区、限幅、aggressive 参数和采样周期；三个转速环同步 Kp/Ki/Kd、死区、限幅和周期 | 已修复。转速环周期按 500ms 控制任务的实际采样间隔运行，最小执行周期为 500ms |
-| Q20 | PID 的 `dt` 必须与实际两次采样间隔一致；外环周期修改、传感器质量中断以及转速环周期调整都可能造成误差 | 已修复：容量环/冷凝压力环在同步参数时更新 `dt`；转速环按配置周期调度，并用实际采样间隔更新 `dt`；传感器失效或控制暂停时清除历史状态 |
-| Q21 | `CSL_RPM_MAX`、`FSL_RPM_MAX` 各有保存值（参数字典）和运行值（`ST_MOTOR_SPEED_MAX`、`ST_FAN_SPEED_MAX`）两份，映射目标转速时读取运行值 | 已修复：`params_store.apply_params()` 在加载参数后同步两组运行值 |
+| Q19 | PID 模块在载入配置后才开始应用参数；控制器实例在模块导入时创建，在线自适应增益还需避免被每周期参数同步覆盖 | 已修复：各 PID 环在状态参数变化时同步新配置，并将新 Kp/Ki/Kd 设为自适应边界基准；未发生外部参数变化时保留在线整定结果 |
+| Q20 | PID 的 `dt` 应与实际更新间隔一致：容量环、冷凝压力环周期可配置；转速任务按 500ms 轮询，转速环周期参数可能大于 500ms | 已修复：容量/压力环同步各自周期；转速环按配置周期调度（最小 500ms），并以实际采样间隔更新 `dt`。反馈无效时清除转速环历史，避免跨无效间隔积分 |
+| Q21 | `CSL_RPM_MAX`、`FSL_RPM_MAX` 的持久化值与运行值分别保存在参数字典和 `ST_MOTOR_SPEED_MAX`/`ST_FAN_SPEED_MAX` | 已修复：配置加载后同步运行值，确保油门到目标转速的换算使用持久化限值 |
 
 ## 12. 取值范围
 

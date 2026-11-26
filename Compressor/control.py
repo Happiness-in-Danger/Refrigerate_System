@@ -38,47 +38,68 @@ _rpm_ctrl = IncrementalController(
     deadband=state.comp_speed_loop_params["deadband"],
     max_delta=state.comp_speed_loop_params["throttle_max_adjust"],
     aggr_mode="off",
-    output_sign=-1.0,
 )
 
 # 当前输出
 _current_throttle = 0
 _last_cap_ms = 0
+_last_cap_params = None
+_last_rpm_params = None
 _last_rpm_ms = None
 
 
 def _sync_cap_params():
-    """同步 Modbus 修改后的容量环参数"""
+    """同步外部参数变更，同时保留控制器内部的在线增益整定。"""
+    global _last_cap_params
     cp = state.compressor_control_params
+    params = tuple(cp.get(key) for key in (
+        "Kp", "Ki", "Kd", "setpoint", "deadband", "max_delta",
+        "error_threshold", "aggr_mode", "tau", "T_goal", "period_s"))
+    if params == _last_cap_params:
+        return
+
     _cap_ctrl.Kp = cp["Kp"]
     _cap_ctrl.Ki = cp["Ki"]
     _cap_ctrl.Kd = cp["Kd"]
     _cap_ctrl.setpoint = cp["setpoint"]
-    _cap_ctrl.deadband = max(0.0, cp["deadband"])
-    _cap_ctrl.max_delta = abs(cp["max_delta"])
+    _cap_ctrl.deadband = cp["deadband"]
+    _cap_ctrl.max_delta = cp["max_delta"]
     _cap_ctrl.error_threshold = cp.get("error_threshold", 5.0)
     _cap_ctrl.aggr_mode = cp.get("aggr_mode", "togoal")
-    _cap_ctrl.tau = max(0.0, cp.get("tau", 3.0))
+    _cap_ctrl.tau = max(1e-6, cp.get("tau", 3.0))
     _cap_ctrl.T_goal = max(1e-6, cp.get("T_goal", 10.0))
     period_s = cp.get("period_s", 10.0)
     _cap_ctrl.dt = period_s if period_s > 0 else 10.0
     _cap_ctrl.K_aggr = 3.0 * _cap_ctrl.Kp
+    # A deliberate user gain change becomes the new adaptive-drift baseline.
+    _cap_ctrl._Kp0, _cap_ctrl._Ki0, _cap_ctrl._Kd0 = (
+        _cap_ctrl.Kp, _cap_ctrl.Ki, _cap_ctrl.Kd)
+    _last_cap_params = params
 
 
 def _sync_rpm_params():
-    """Apply persisted/Modbus speed-loop settings to the live controller."""
+    """Apply persisted/Modbus changes without erasing online gain adaptation."""
+    global _last_rpm_params
     cp = state.comp_speed_loop_params
+    params = tuple(cp.get(key) for key in (
+        "Kp", "Ki", "Kd", "period_s", "deadband", "throttle_max_adjust"))
+    if params == _last_rpm_params:
+        return
+
     _rpm_ctrl.Kp = cp["Kp"]
     _rpm_ctrl.Ki = cp["Ki"]
     _rpm_ctrl.Kd = cp["Kd"]
-    _rpm_ctrl.deadband = max(0.0, cp["deadband"])
-    _rpm_ctrl.max_delta = abs(cp["throttle_max_adjust"])
+    _rpm_ctrl.dt = max(1e-6, cp["period_s"])
+    _rpm_ctrl.deadband = cp["deadband"]
+    _rpm_ctrl.max_delta = cp["throttle_max_adjust"]
     _rpm_ctrl.aggr_mode = "off"
-    _rpm_ctrl.output_sign = -1.0
+    _rpm_ctrl._Kp0, _rpm_ctrl._Ki0, _rpm_ctrl._Kd0 = (
+        _rpm_ctrl.Kp, _rpm_ctrl.Ki, _rpm_ctrl.Kd)
+    _last_rpm_params = params
 
 
 def _rpm_update_due(now_ms):
-    """Run the speed PID at its configured interval, quantized by the 500ms task."""
+    """Match PID dt to its configured cadence (task polling resolution: 500ms)."""
     global _last_rpm_ms
     period_ms = max(500, int(state.comp_speed_loop_params.get("period_s", 0.5) * 1000))
     if (_last_rpm_ms is not None and
@@ -92,6 +113,16 @@ def _rpm_update_due(now_ms):
     return True
 
 
+def _reset_rpm_state():
+    global _last_rpm_ms
+    _rpm_ctrl.integral = 0.0
+    _rpm_ctrl.prev_meas = None
+    _rpm_ctrl.dx_filtered = 0.0
+    _rpm_ctrl.prev_dx_filtered = 0.0
+    _rpm_ctrl.ddx_filtered = 0.0
+    _last_rpm_ms = None
+
+
 def _throttle_to_rpm_cmd(throttle):
     """将 supervisor 下发的油门值映射到目标转速（rpm）。"""
     if throttle <= 0:
@@ -102,15 +133,18 @@ def _throttle_to_rpm_cmd(throttle):
 
 def _reset_pid():
     """停机时清零转速环状态，防止历史积分影响下次启动"""
-    global _current_throttle, _last_rpm_ms
+    global _current_throttle
     _current_throttle = 0
-    _rpm_ctrl.reset()
-    _last_rpm_ms = None
+    _reset_rpm_state()
 
 
 def _reset_cap_pid():
     """容量环积分清零"""
-    _cap_ctrl.reset()
+    _cap_ctrl.integral = 0.0
+    _cap_ctrl.prev_meas = None
+    _cap_ctrl.dx_filtered = 0.0
+    _cap_ctrl.prev_dx_filtered = 0.0
+    _cap_ctrl.ddx_filtered = 0.0
 
 
 def _update_capacity_loop(now_ms):
@@ -128,7 +162,6 @@ def _update_capacity_loop(now_ms):
     if (state.manual_params.get("MANUAL_MODE_ENABLE", 0) or
             state.running_substate == state.RUNNING_THERMO_OFF or
             state.sys_mode != state.MODE_RUNNING):
-        _reset_cap_pid()
         return
 
     idx = state.IDX_OUTLET_T
@@ -136,7 +169,6 @@ def _update_capacity_loop(now_ms):
     age = state.sensor_age_ms(idx)
     if q != state.Q_OK or age > 2000:
         # 质量非 OK 或超龄：冻结积分，保持当前输出
-        _reset_cap_pid()
         return
 
     temp = state.sensor_checked[idx]
@@ -166,7 +198,7 @@ def _update_capacity_loop(now_ms):
 
 async def Compressor():
     """压缩机 0.5s 周期执行协程"""
-    global _current_throttle, _last_rpm_ms
+    global _current_throttle
     while True:
         now_ms = time.ticks_ms()
         link = get_driver_link()
@@ -193,16 +225,15 @@ async def Compressor():
 
         # 发送到 ESC0
         if link is not None and enabled and rpm_cmd > 0 and state.driver_link_ok:
-            _sync_rpm_params()
             if not speed_loop_enabled:
                 # 转速环禁用：开环油门直通
-                _rpm_ctrl.reset()
-                _last_rpm_ms = None
+                _reset_rpm_state()
                 _current_throttle = max(
                     state.ESC_THROTTLE_MIN,
                     min(state.ESC_THROTTLE_MAX, throttle_cmd)
                 )
             else:
+                _sync_rpm_params()
                 # 启动瞬间用 supervisor 油门作为开环前馈
                 if _current_throttle <= 0:
                     _current_throttle = max(state.ESC_THROTTLE_MIN, throttle_cmd)
@@ -212,11 +243,10 @@ async def Compressor():
                 if rpm_fb != 999:
                     if _rpm_update_due(now_ms):
                         _rpm_ctrl.setpoint = rpm_cmd
-                        delta = _rpm_ctrl.update(rpm_fb)
+                        delta = -_rpm_ctrl.update(rpm_fb)
                         _current_throttle += delta
                 else:
-                    _rpm_ctrl.reset()
-                    _last_rpm_ms = None
+                    _reset_rpm_state()
 
                 # 限幅
                 _current_throttle = max(
