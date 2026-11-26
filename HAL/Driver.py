@@ -1,9 +1,12 @@
 '''
 注意此文件运行在主控部份！！！注意此文件运行在主控部份！！！注意此文件运行在主控部份！！！
+
 STM32H743 主控侧 UART 代码
+
 H743通过此文件与Pico通讯，Pico 是负责电调控制和电调遥测的从机。
 
 ===================== 协议说明 =====================
+
 固定支持 MAX_ESC=4 路 ESC（与Pico侧Uart_link.py的MAX_ESC=4完全对应，
 两边都固定为4，不再需要"改一个数字要记得改另一边"）。
 
@@ -30,6 +33,15 @@ H743通过此文件与Pico通讯，Pico 是负责电调控制和电调遥测的�
     100ms  Pico未收到合法命令 -> 该端throttle清零，enabled保留
     2000ms Pico未收到合法命令 -> 该端throttle清零，同时enabled清除
     本文件(H743侧)同样对"多久没收到Pico状态帧"做超时判定(见link_ok)。
+
+===================== 本版相对仓库版的改动（均为向后兼容）==============
+  1) FrameReceiver 不再用 bytearray 的 del（H743 的 MicroPython 不支持，会抛
+     TypeError: 'bytearray' object doesn't support item deletion），改为 bytes+下标。
+  2) UART 接收缓冲加大到 256 字节(read_buf_len)。
+  3) 新增(不影响原有接口)：统计信息、reset_stats()、update()、send_raw()、
+     status_age_ms()/status_fresh()、emergency_stop()、build_cmd_frame()。
+  其余(raw_erpm / get_driver_link / update_telemetry_to_state / THROTTLE_MIN/MAX 等)
+  与仓库版完全一致。
 '''
 from pyb import UART
 import time
@@ -54,8 +66,11 @@ STATUS_FLAG_ENABLED = 0x04
 
 CMD_ENABLE_BIT = 0x80
 CMD_THR_HI_MASK = 0x07
-THROTTLE_MIN = 48       # 电机有效调速下限，0 仅用于停机
-THROTTLE_MAX = 0x07FF   # 电机有效调速上限
+
+THROTTLE_MIN = 48            # 电机有效调速下限，0 仅用于停机
+THROTTLE_MAX = 0x07FF        # 电机有效调速上限
+
+STATUS_FRESH_MS = 200        # [新增] 超过此时间没收到某路状态帧，视为该路遥测过期
 
 
 def crc8_update(crc, byte):
@@ -71,6 +86,18 @@ def crc8(buf):
     for b in buf:
         crc = crc8_update(crc, b)
     return crc
+
+
+def build_cmd_frame(device_id, enabled, throttle):
+    """[新增] 按协议编码一帧命令(测试里用它构造伪造/损坏帧)。不做油门区间修正。"""
+    thr = max(0, min(0x07FF, int(throttle)))
+    buf = bytearray(CMD_FRAME_LEN)
+    buf[0] = SYNC_CMD
+    buf[1] = device_id & 0xFF
+    buf[2] = (CMD_ENABLE_BIT if enabled else 0x00) | ((thr >> 8) & CMD_THR_HI_MASK)
+    buf[3] = thr & 0xFF
+    buf[4] = crc8(buf[:4])
+    return buf
 
 
 class EscStatus:
@@ -105,37 +132,52 @@ class EscCommand:
 
 
 class FrameReceiver:
+    """按sync字节+固定长度+CRC8从字节流里切帧，自动丢字节重新同步。
+    [改动] 不使用 bytearray 的 del（H743 的 MicroPython 不支持），
+    用 bytes + 下标游走，最后用切片重新赋值。"""
+
     def __init__(self, sync_byte, frame_len):
         self.sync = sync_byte
         self.frame_len = frame_len
-        self.buf = bytearray()
+        self.buf = b""
+        self.dropped_bytes = 0     # 因找不到sync而丢弃的字节数
+        self.crc_fail = 0          # sync对上但CRC不过的次数
 
     def feed(self, data):
         if data:
-            self.buf.extend(data)
+            self.buf = self.buf + bytes(data)
 
         frames = []
+        buf = self.buf
+        n = len(buf)
+        fl = self.frame_len
+        sync = self.sync
+        pos = 0
 
         while True:
-            while len(self.buf) > 0 and self.buf[0] != self.sync:
-                del self.buf[0]
+            while pos < n and buf[pos] != sync:
+                pos += 1
+                self.dropped_bytes += 1
 
-            if len(self.buf) < self.frame_len:
+            if n - pos < fl:
                 break
 
-            candidate = bytes(self.buf[:self.frame_len])
+            candidate = buf[pos:pos + fl]
 
             if crc8(candidate[:-1]) == candidate[-1]:
-                del self.buf[:self.frame_len]
                 frames.append(candidate)
+                pos += fl
             else:
-                del self.buf[0]
+                pos += 1
+                self.crc_fail += 1
 
+        self.buf = buf[pos:]
         return frames
 
 
 # Driver link 全局实例（供 main.py / 设备模块共享，避免循环导入）
 _driver_link = None
+
 
 def get_driver_link():
     """惰性初始化 Driver link（失败降级）"""
@@ -151,7 +193,7 @@ def get_driver_link():
 
 class UartLink:
     def __init__(self):
-        self.uart = UART(UART_ID, UART_BAUD)
+        self.uart = UART(UART_ID, UART_BAUD, read_buf_len=256)
 
         self.statuses = [EscStatus() for _ in range(MAX_ESC)]
         self.commands = [EscCommand() for _ in range(MAX_ESC)]
@@ -162,6 +204,65 @@ class UartLink:
         self.last_rx_ms = time.ticks_ms()
         self.LINK_TIMEOUT_MS = 100
 
+        # [新增] update() 用的发送节奏
+        self._send_idx = 0
+        self._last_cmd_ms = time.ticks_ms()
+        self.CMD_PERIOD_MS = 2
+
+        # [新增] 每路最近一次收到状态帧的时间(判断遥测是否过期)
+        self._status_seen = [False] * MAX_ESC
+        self._status_ms = [0] * MAX_ESC
+
+        # [新增] 统计信息(诊断用，不影响功能)
+        self.rx_frames = 0
+        self.rx_frames_dev = [0] * MAX_ESC
+        self.last_frame_ms_dev = [time.ticks_ms()] * MAX_ESC
+        self.gap_max_ms_dev = [0] * MAX_ESC
+        self.link_drop_count = 0       # link_ok True->False 的次数
+        self.tx_frames = 0
+
+    # -------------------- [新增] 统计 --------------------
+    def reset_stats(self):
+        now = time.ticks_ms()
+        self.rx_frames = 0
+        self.rx_frames_dev = [0] * MAX_ESC
+        self.last_frame_ms_dev = [now] * MAX_ESC
+        self.gap_max_ms_dev = [0] * MAX_ESC
+        self.link_drop_count = 0
+        self.tx_frames = 0
+        self._rx.dropped_bytes = 0
+        self._rx.crc_fail = 0
+
+    @property
+    def crc_fail(self):
+        return self._rx.crc_fail
+
+    @property
+    def dropped_bytes(self):
+        return self._rx.dropped_bytes
+
+    # -------------------- [新增] 遥测新鲜度 --------------------
+    def status_age_ms(self, device_id):
+        """距离上次收到该路状态帧过了多久(ms)；从未收到返回一个很大的数。"""
+        if not self._status_seen[device_id]:
+            return 0x7FFFFFFF
+        return time.ticks_diff(time.ticks_ms(), self._status_ms[device_id])
+
+    def status_fresh(self, device_id, max_age_ms=STATUS_FRESH_MS):
+        return self.status_age_ms(device_id) <= max_age_ms
+
+    # -------------------- [新增] 主循环入口 --------------------
+    def update(self):
+        """可选：主循环每圈调用一次 = 收状态帧 + 每2ms轮询发一路命令。返回 link_ok。
+        (等价于文件末尾使用示例里的写法；你自己的主循环已经在做同样的事就不必用它。)"""
+        self.poll_status()
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._last_cmd_ms) >= self.CMD_PERIOD_MS:
+            self.send_command(self._send_idx)
+            self._send_idx = (self._send_idx + 1) % MAX_ESC
+            self._last_cmd_ms = now
+        return self.link_ok
+
     # -------------------- 接收 Pico 状态帧 --------------------
     def poll_status(self):
         n = self.uart.any()
@@ -171,13 +272,26 @@ class UartLink:
 
         for f in frames:
             self._apply_status_frame(f)
-            self.last_rx_ms = time.ticks_ms()
+            now = time.ticks_ms()
+            self.last_rx_ms = now
             self.link_ok = True
+
+            # [新增] 统计
+            self.rx_frames += 1
+            d = f[1]
+            if d < MAX_ESC:
+                self.rx_frames_dev[d] += 1
+                gap = time.ticks_diff(now, self.last_frame_ms_dev[d])
+                if gap > self.gap_max_ms_dev[d]:
+                    self.gap_max_ms_dev[d] = gap
+                self.last_frame_ms_dev[d] = now
 
         if time.ticks_diff(
             time.ticks_ms(),
             self.last_rx_ms
         ) > self.LINK_TIMEOUT_MS:
+            if self.link_ok:
+                self.link_drop_count += 1      # [新增]
             self.link_ok = False
 
         return self.link_ok
@@ -201,6 +315,10 @@ class UartLink:
         st.voltage = ((buf[8] << 8) | buf[9]) / 100.0
         st.current = ((buf[10] << 8) | buf[11]) / 100.0
 
+        # [新增] 记录该路最近一次收到状态的时间
+        self._status_seen[device_id] = True
+        self._status_ms[device_id] = time.ticks_ms()
+
     # -------------------- 下发命令给 Pico --------------------
     def enable(self, device_id):
         """启用某一路(下一次send_command/send_all_commands时生效)"""
@@ -213,7 +331,7 @@ class UartLink:
 
     def set_throttle(self, device_id, throttle):
         """只有enabled=True时，这个throttle才会真正被Pico采用
-        
+
         Args:
             device_id: 0-3
             throttle: 0-2047（油门值）
@@ -224,9 +342,14 @@ class UartLink:
             0 if throttle <= 0 else max(THROTTLE_MIN, min(THROTTLE_MAX, throttle))
         )
 
+    def send_raw(self, data):
+        """[新增] 直接发原始字节(故障注入/调试用)"""
+        self.uart.write(data)
+
     def send_command(self, device_id, cmd=None):
         """把 self.commands[device_id] (或显式传入的cmd) 编码发送给Pico"""
         c = cmd if cmd is not None else self.commands[device_id]
+
         requested = int(c.throttle)
         thr = (0 if requested <= 0 else
                max(THROTTLE_MIN, min(THROTTLE_MAX, requested))) if c.enabled else 0
@@ -239,10 +362,20 @@ class UartLink:
         buf[-1] = crc8(buf[:-1])
 
         self.uart.write(buf)
+        self.tx_frames += 1                    # [新增]
 
     def send_all_commands(self):
         for device_id in range(MAX_ESC):
             self.send_command(device_id)
+
+    def emergency_stop(self):
+        """[新增] 立刻全部禁用并连续下发数次(阻塞约30ms)。异常/退出时调用。"""
+        for c in range(MAX_ESC):
+            self.commands[c].enabled = False
+            self.commands[c].throttle = 0
+        for _ in range(5):
+            self.send_all_commands()
+            time.sleep_ms(5)
 
     # -------------------- Step5a: ESC 遥测数据换算与写入 state --------------------
     def update_telemetry_to_state(self, state_module):
@@ -268,9 +401,9 @@ class UartLink:
         # 4 个 ESC × 4 字段
         for esc_id in range(MAX_ESC):
             status = self.statuses[esc_id]
-            base_idx = 16 + esc_id * 4  # ESC0→16, ESC1→20, ESC2→24, ESC3→28
-
+            base_idx = 16 + esc_id * 4   # ESC0→16, ESC1→20, ESC2→24, ESC3→28
             cfg = cfg_table[esc_id] if esc_id < len(cfg_table) else {}
+
             pole_pairs = cfg.get("pole_pairs", 1) or 1
             erpm_scale = cfg.get("erpm_scale", 1.0) or 1.0
             voltage_scale = cfg.get("voltage_scale", 1.0) or 1.0
@@ -302,10 +435,10 @@ class UartLink:
                 current = 999
 
             # 写入 state_data[16-31]
-            state_module.state_data[base_idx + 0] = rpm      # 反馈机械 rpm
-            state_module.state_data[base_idx + 1] = temp     # 温度 (°C)
-            state_module.state_data[base_idx + 2] = voltage  # 电压×10
-            state_module.state_data[base_idx + 3] = current  # 电流×10
+            state_module.state_data[base_idx + 0] = rpm       # 反馈机械 rpm
+            state_module.state_data[base_idx + 1] = temp      # 温度 (°C)
+            state_module.state_data[base_idx + 2] = voltage   # 电压×10
+            state_module.state_data[base_idx + 3] = current   # 电流×10
 
 
 # ================= 使用示例 =================

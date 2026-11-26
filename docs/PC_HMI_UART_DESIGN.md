@@ -1,6 +1,6 @@
-# 电脑 HMI 串口通信设计（修订 11）
+# 电脑 HMI 串口通信设计（修订 12）
 
-状态：设计稿。本文档仅描述设计，不包含实现代码。
+状态：设计稿。修订 12 已对照固件源码逐项核对；PC 端与固件端 UART HMI 协程已实现（见 `pc_hmi/` 与 `Board/hmi_uart.py`）。本文档仅描述设计，不包含实现代码。
 
 修订记录：
 - 修订 6：去掉全部 Modbus 依赖；点位清单来自 `Board/state.py`；加入异步发送的阻塞控制。
@@ -9,7 +9,7 @@
 - 修订 9：按“只有一台 PC、直连一块板”简化并优化。
   - 快照拆分：动态快照（每秒）与参数快照（按需），带宽降到约 1/3。
   - 报警位图以单个整数传输，不再逐位传。
-  - 重新统计点位数（动态 75，参数 134）。
+  - 重新统计点位数（动态 75，参数 166）。
   - 补充：发送队列（行级原子）、范围与当前值的关系、校验规则、哨兵范围、生效时机、重启行为。
   - 统一符号名；`COND_SETPOINT` 改为只读镜像（单一来源 `HP_TARGET`）。
 - 修订 10：
@@ -28,12 +28,27 @@
   - 清单哈希覆盖类型、读写、精度、单位、枚举、位图定义；其他影响线上格式的改动必须升协议版本。
   - 规定数值文本表示上限（浮点 12 字符、整数 11 字符），快照缓冲按最坏情形分配（动态 1024、参数 2048），格式化带越界检查。
   - 协议版本升为 4。
+- 修订 12（对照固件源码核对后补全；点数 166/75 经脚本核对无误，166 个参数符号均能在 `Board/state.py` 中找到对应键）：
+  - 确认 HMI 与 Modbus 完全独立（第 1 节），新增“与组态屏操作的对应”（第 9.2 节）。
+  - 关闭 Q9（第 8 节）和 Q17（附录 D）；补充 `SYS_MODE` 等枚举定义（附录 D）。
+  - **修正一处设计错误**：`ERROR_REG` 全部正常时为 4294967295，超过原定整数上限 2,147,483,647，按旧规则会被输出成 999。位图点位改按无符号 32 位处理（6.2）。
+  - 新增附录 C（符号到 state 的映射与生效时机）。核对发现 18 个参数在现有固件下需重启才生效（Q19，仅作备注），并有一处持久化缺口（Q21）。
+  - 新增附录 E（推荐用户范围），由现有 Modbus `_HR_RANGE` 换算，避免从组态屏切换后失去限值。
+  - 新增待确认 Q18、Q20、Q21 和备注 Q19；修正 `read_buf_len` 写法、13.1 与第 10 节中的陈旧数值。
+  - 协议版本仍为 4（固件尚无实现；点位元数据新增枚举类型，哈希随之变化）。
+ - 复核（2026-11-24，逐条对照源码）：13.1 中残留的“Q9 待核对”已改；Q9 增加蒸发风机例外；Q18 补数据来源并同步 A.7、B.3、6.3；Q20 补转速环 `PERIOD_S` 的实际含义；Q21 补保存值与运行值的区分，并给出固件修复前的界面处理；附录 E 重写：改正“唯一限值来源”的说法，拆出不建议应用的 14 项，补默认值与说明，并列出没有现成范围的 49 项。表内数值未变。
+ - PC HMI 界面调整（2026-11-25）：`ERROR_REG` 已定义的报警位 0–15（包括 bit 8 `MODBUS_COMM_FAULT`）均逐位显示；保留位 16–31 不作为报警显示。仅 UI 呈现变化，不影响协议版本和清单哈希。
+ - 修订 13（2026-11-26）：将 `ESC_TELEMETRY_CFG` 展开为 A.8 组 32 个 HMI 可写参数；参数总数 134 → 166，清单哈希更新为 `14B2`，参数快照缓冲扩至 2304 字节。
 
 ## 1. 目标
 
 用电脑上的 HMI 软件替代实体组态屏，通过 USB-TTL 串口与 STM32 主控通信。界面覆盖：运行状态、报警与联锁、参数查看与修改、启停、模式和复位操作。
 
 本文档不涉及 Modbus。控制算法、保护策略、启停状态机和执行器驱动不改动。
+
+**与现有 Modbus 的关系（修订 12 确认）**：UART8 上的 Modbus 从机与 UART1 上的 HMI 链路互相独立，各有一套点位和一套超时。HMI 不读写 Modbus 寄存器表，也不调用其读写函数。没有 Modbus 主站时 `last_modbus_frame_ms` 保持 0，规则 `MODBUS_COMM_FAULT` 不判故障（`Alarm/rules.py:414-426`），所以只用 UART HMI 不会因 Modbus 超时而停机。
+
+**界面目标**：功能上等价于现有组态屏，每一项屏上的操作在 HMI 中都有对应（第 9.2 节）。
 
 **使用前提**：只有一台 PC，点对点连接一块主控板。不考虑多客户端、多会话和权限。
 
@@ -87,9 +102,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 
 - **分块发送**：每次 `write()` 不超过 32 字节，阻塞约 3 毫秒。块间 `await asyncio.sleep_ms(1)`。
 - **动态快照**：75 个值。典型约 400 字节，约 13 块，墙钟约 50 毫秒；最坏（每个值 12 字符）约 990 字节，约 31 块，墙钟约 120 毫秒。
-- **参数快照**：134 个值。典型约 800 字节，约 25 块，墙钟约 100 毫秒；最坏约 1745 字节，约 55 块，墙钟约 210 毫秒。仅在握手后、`W` 成功后、`Q` 请求时发送，不周期发送。
+- **参数快照**：166 个值。典型约 1000 字节，约 31 块，墙钟约 130 毫秒；最坏约 2161 字节，约 68 块，墙钟约 270 毫秒。仅在握手后、`W` 成功后、`Q` 请求时发送，不周期发送。
 - **接收不阻塞**：`timeout=0`，只用 `uart.any()` 判断，再 `uart.read(n)`。不使用 `readline()`。
-- **接收缓冲**：`rxbuf=1024`。单行（含校验）不超过 256 字节，超长则丢弃到下一个 LF，并回复 `E FORMAT`。最坏的批量写入行约 235 字节（5 对，符号 32 字符，值 12 字符）。115200 baud 下 20 ms 约进入 230 字节，1024 能容纳一整行加两个周期的到达量；若实测仍有溢出，把 `hmi_rx` 周期降到 10 ms。
+- **接收缓冲**：`rxbuf=1024`（本项目用 `pyb.UART`，参数名是 `read_buf_len`，`Board/board.py` 中 UART8 已是这种写法；文中的 `rxbuf` 均指它）。单行（含校验）不超过 256 字节，超长则丢弃到下一个 LF，并回复 `E FORMAT`。最坏的批量写入行约 235 字节（5 对，符号 32 字符，值 12 字符）。115200 baud 下 20 ms 约进入 230 字节，1024 能容纳一整行加两个周期的到达量；若实测仍有溢出，把 `hmi_rx` 周期降到 10 ms。
 - **单次运行预算**：任何协程的单次运行不超过约 5 毫秒。
 - **持久化不在 `hmi_rx` 内执行**：写 flash 可能阻塞十几毫秒。`params_store` 的 30 秒防抖保存由其现有机制触发，不在命令处理路径里同步写 flash。
 
@@ -108,12 +123,12 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 
 - **预分配**：动态快照和参数快照各有一个固定大小的发送 `bytearray`，启动时分配一次，反复使用。大小按最坏情形计算（每个值 12 字符加 1 个空格）：
   - 动态快照：`S ` 2 字节 + 序号（最长 10 位）加空格 11 字节 + 75×13 + LF 1 字节 ≈ 989 字节，缓冲 1024 字节。
-  - 参数快照：`Q ` 2 字节 + 134×13 + LF 1 字节 ≈ 1745 字节，缓冲 2048 字节。
+  - 参数快照：`Q ` 2 字节 + 166×13 + LF 1 字节 ≈ 2161 字节，缓冲 2304 字节。
   - 范围列表每行 `R <符号> <最小> <最大>` 最长约 61 字节，行缓冲 64 字节。
 
   不用字符串拼接、`%`、`format`、f-string 生成整行。
 - **越界检查**：格式化每写一个值之前检查剩余空间。空间不够视为内部错误：丢弃这份快照并记日志，不写到缓冲之外。按上面的最坏情形计算，正常不会触发。
-- **一致性**：生成快照时，先在一个不含 `await` 的过程里，把各点位当前值复制到预分配的列表（动态 75 项，参数 134 项）。同一份快照的所有值来自同一时刻。之后分片格式化只读这份列表，不再读 `state`。
+- **一致性**：生成快照时，先在一个不含 `await` 的过程里，把各点位当前值复制到预分配的列表（动态 75 项，参数 166 项）。同一份快照的所有值来自同一时刻。之后分片格式化只读这份列表，不再读 `state`。
 - **格式化**：整数直接写入数字。浮点值按“乘 100 取整”手写两位小数，写入 `bytearray`，不调用浮点格式化。每个分片（对应一块发送，不超过 32 字节）的格式化耗时目标不超过 1 毫秒。
 - **复制耗时**：需实测。若超过 1 毫秒，记录实测数据后重新评估，不在文档外私自改成分段复制（会破坏同一时刻的一致性）。
 - **垃圾回收**：若实测发现偶发回收停顿超过 5 毫秒，则在每个快照发送完成后主动调用一次 `gc.collect()`，让停顿出现在可预测的时刻。不在发送块之间调用。
@@ -135,7 +150,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 - 符号名与 `state.py` 的键名一致；同名键加组前缀区分。
 - 清单分两份，各有固定顺序：
   - **动态清单**（75 个值）：只读量、报警位图、联锁、`SYSTEM_ENABLE`。随 `S` 周期发送。
-  - **参数清单**（134 个值）：A.1–A.7 的全部参数。随 `Q` 按需发送。
+  - **参数清单**（166 个值）：A.1–A.8 的全部参数。随 `Q` 按需发送。
 - 固件与 PC 端使用同一份清单。清单版本号和清单哈希由固件返回（握手时），PC 端对照自己的清单校验。
 - 不纳入清单：`MODBUS_TIMEOUT_S`。
 - **单一来源**：维护一份 `points.csv`，每行一个点位：符号、所属清单（`S`/`Q`）、类型、默认值、读写、保持、同步目标、说明。用生成脚本产出固件的点位表和 PC 端的点位表，不手工维护两份。脚本位置和名称待定（由用户决定）。
@@ -144,7 +159,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
   - 类型：`i` 整数、`f` 浮点、`e` 枚举、`b` 位图、`s` 开关、`a` 动作。
   - 读写：`R` 只读、`W` 可写、`A` 动作。
   - 小数位：整数为 0，浮点为 2。
-  - 取值集合：枚举写 `1|2|3`；位图写 `0:名称;1:名称;…`，包含 `ERROR_REG`、`SENSOR_FAULT_REG`、`LIMIT_ACTIONS` 的全部位定义（后两者的位定义见第 11 节 Q17）。其他点位为空。
+  - 取值集合：枚举写 `1|2|3`；位图写 `0:名称;1:名称;…`，包含 `ERROR_REG`、`SENSOR_FAULT_REG`、`LIMIT_ACTIONS` 的全部位定义，以及 `SYS_MODE`、`STARTUP_STAGE`、`RUNNING_SUBSTATE`、`SENSOR_QUALITY_0…9` 的取值集合，均见附录 D。其他点位为空。
   - 不进入哈希的字段：默认值、说明、保持、同步目标、界面文字。它们不影响线上解析。
   - **规则**：任何会改变线上格式或数值含义的修改（命令集、行格式、校验方式、数值上限），如果 `points.csv` 元数据里没有对应字段，必须升级协议版本号，不依赖哈希。
   - **生成脚本检查**：符号长度不超过 32 字符，符号不得为 `END`，符号不得重复。
@@ -160,6 +175,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 - **数值表示上限**（协议规定，不是设备硬限）：
   - 浮点点位：绝对值小于 100,000,000，输出形如 `-1234567.89`，最长 12 字符。
   - 整数点位：绝对值不超过 2,147,483,647，最长 11 字符。
+  - **位图点位按无符号 32 位处理**：范围 0–4,294,967,295，最长 10 字符，不适用上一条的有符号上限，也不会被替换成 `999`。`ERROR_REG` 全部正常时就是 4294967295。PC 端按无符号整数解析。
   - `W` 的值和 `R` 设定的最小/最大值都按此检查。超限，或不是有限数（nan、inf），回复 `E FORMAT`，不修改。
   - 只读点位的读数若超出此上限，输出 `999` 并记日志，不输出超长文本。
   - 因此用户范围虽然没有设备硬限，文本长度仍有上限，快照缓冲按最坏情形分配（见 4.4）。
@@ -192,12 +208,12 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
   | `HP_TARGET` | `cond_control_params['setpoint']`，即只读的 `COND_SETPOINT` | `COND_SETPOINT` 不可直接写 |
   | `CSL_RPM_MAX` | `ST_MOTOR_SPEED_MAX`，即只读的 `MOTOR_SPEED_MAX` | |
   | `FSL_RPM_MAX` | `ST_FAN_SPEED_MAX`，即只读的 `FAN_SPEED_MAX` | |
-  | `EVAP_FAN_USER_THROTTLE` | `ST_EVAP_FAN_SPEED_CMD`，即只读的 `EVAP_FAN_CMD` | 控制环可能随后改写 `EVAP_FAN_CMD`，以动态快照中的值为准 |
+  | `EVAP_FAN_USER_THROTTLE` | 无（HMI 写入时不再同步 `EVAP_FAN_CMD`） | `EVAP_FAN_CMD` 是蒸发风机转速环的目标转速（rpm），应由蒸发风机模块发布（待固件实现，Q18），不是用户油门；Modbus 的 hr221 把油门值写进该槽位属于混用，HMI 不沿用 |
 
   同步字段包含在同一次原子写入中。
 - **禁止写入**：`FLOW_ENABLE` 固定为 0。
 - **动作**：`FAULT_RESET` 为脉冲动作，只能用 `A` 执行。
-- **生效时机**：写入发生在 `hmi_rx` 协程内，没有 `await`，控制协程不会看到写了一半的状态。控制环在下一个周期读取新值。PID 参数变化时不重置积分项；实机若发现参数修改引起输出跳变，再在控制环中处理，见第 11 节 Q8。
+- **生效时机**：写入发生在 `hmi_rx` 协程内，没有 `await`，控制协程不会看到写了一半的状态。控制环在下一个周期读取新值。PID 参数变化时不重置积分项；实机若发现参数修改引起输出跳变，再在控制环中处理，见第 11 节 Q8。各参数实际生效的时机不同（下一周期，或需重启），见附录 C.2。
 
 ### 6.4 持久化
 
@@ -244,9 +260,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 
 | 回复 | 含义 | 示例 |
 |---|---|---|
-| `H <版本> <动态点数> <参数点数> <哈希>` | 握手应答 | `H 4 75 134 1A2B` |
+| `H <版本> <动态点数> <参数点数> <哈希>` | 握手应答 | `H 4 75 166 14B2` |
 | `S <序号> <值1> … <值75>` | 动态快照，按动态清单顺序 | `S 17 12.34 0 …` |
-| `Q <值1> … <值134>` | 参数快照，按参数清单顺序 | `Q 0.60 0.12 …` |
+| `Q <值1> … <值166>` | 参数快照，按参数清单顺序 | `Q 0.60 0.12 …` |
 | `R <符号> <最小> <最大>` | 范围应答，未设定时为 `-` | `R SH_SETPOINT - -` |
 | `R END <n>` | `R *` 列表结束，`n` 为前面范围行数 | `R END 12` |
 | `OK` | 命令成功 | `OK` |
@@ -289,7 +305,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 ## 8. 安全与运行
 
 - **链路超时**：只有 `ST_SYSTEM_ENABLE` 为 1 时才判断。系统运行期间，若超过 3 秒没有收到合法命令行（含 `P`），`hmi_watchdog` 把 `ST_SYSTEM_ENABLE` 置为 0，由现有 supervisor 执行正常停机，与停机命令的路径一致。不设置故障位，不锁存。系统处于停机状态时不判断超时。
-- **超时时清除手动模式**：触发超时停机时，同时把 `MANUAL_MODE_ENABLE` 置为 0（只清开关，不改手动油门和开度的数值）。这样重连后不会遇到手动输出仍然有效。手动模式下 supervisor 对 `SYSTEM_ENABLE=0` 的实际行为见第 11 节 Q9。
+- **超时时清除手动模式**：触发超时停机时，同时把 `MANUAL_MODE_ENABLE` 置为 0（只清开关，不改手动油门和开度的数值）。这样重连后不会遇到手动输出仍然有效。手动模式下 `SYSTEM_ENABLE=0` 的实际行为已核对（Q9 关闭）：supervisor 在 STARTUP、RUNNING、ALARM 任一状态见到 `SYSTEM_ENABLE=0` 都进入 STOPPING 正常停机（`Alarm/supervisor.py:719,735,755`）；压缩机、冷凝风机、EXV 的手动覆盖要求 `MANUAL_MODE_ENABLE=1` 且处于 `MODE_RUNNING`（`Compressor/control.py:151-153`、`Condenser/control.py:140-142`、`EXV/Valve_CRTL.py:125-127`），进入 STOPPING 后不再套用，所以停机序列不会被手动值干扰。**蒸发风机例外**：RUNNING 且使能时始终读取 `EVAP_FAN_USER_THROTTLE`，不受 `MANUAL_MODE_ENABLE` 控制（`Evaporator/control.py:58-61`）；它同样只在 RUNNING 内生效，停机时由联锁油门接管。超时时清除 `MANUAL_MODE_ENABLE` 仍然保留，目的是防止下次启动进入 RUNNING 后立刻套用旧的手动值。
 - **合法命令行**：能被识别、格式正确、需要校验的命令校验通过。噪声字符、校验错误的行、超长行不刷新心跳时间。这比“任何字符”更严格，是修订 10 对原决定的收紧。
 - **心跳频率**：PC 每 0.5 秒发一次 `P`，3 秒内有 6 次机会，单次延迟不会触发停机。
 - **心跳反映界面存活**：PC 界面主线程每 0.5 秒更新一个“存活”时间戳；串口线程只在该时间戳不超过 1.5 秒时才发 `P`。串口线程不自行周期性发送其他命令，所以界面卡死时固件会收不到合法命令行而停机。
@@ -305,6 +321,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 ## 9. 电脑端 HMI
 
 - 框架：Python，PySide6，PySerial。串口收发放在后台线程，界面线程不做阻塞 I/O。
+- 开发环境：复用 `pc_hmi/` 下现有的 Python 3 虚拟环境；PySide6 和 pyserial 已安装，不要重复创建环境或安装依赖。
 - 单实例：软件只打开一个串口，不需要会话或权限管理。
 - 页面：
   1. **运行总览**：温度、压力、过热度、过冷度、焓值、电流、EXV 开度、压缩机和风机转速。
@@ -330,10 +347,44 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 - 停止按钮使用符号名 `SYSTEM_ENABLE`，不依赖清单顺序，所以不兼容状态下仍然可用。
 - 这是对原“版本不一致时只读”的收紧：不一致时连数值都不显示，避免按错位的清单把数值当成别的量。
 
+### 9.2 与组态屏操作的对应
+
+组态屏是 Modbus RTU 主站（点表见 `docs/MODBUS_ADDRESS_MAP.md`）。屏上能做的每一项操作，HMI 都有对应的符号和命令。
+
+| 组态屏（Modbus 区） | HMI | 说明 |
+|---|---|---|
+| 线圈 0x1 系统使能 | `W SYSTEM_ENABLE 0/1` | 常驻停止按钮即写 0，可插队 |
+| 线圈 0x2 手动模式 | `W MANUAL_MODE_ENABLE 0/1` | 超时停机时固件清零 |
+| 线圈 0x3 / 0x4 / 0x5 转速环使能 | `W COMP_SPEED_LOOP_ENABLE`、`W COND_FAN_SPEED_LOOP_ENABLE`、`W EVAP_FAN_SPEED_LOOP_ENABLE` | |
+| 线圈 0x6 流量检查使能 | 只读，固定 0 | 当前样机无实体流量开关 |
+| 线圈 0x7 故障复位 | `A FAULT_RESET*XX` | 脉冲动作 |
+| 线圈 0x8 晋级模式 | `W STARTUP_ADVANCE_MODE 0/1` | |
+| 离散量 1x1–1x16 | `ERROR_REG` 位拆分 | 1=正常，0=故障；位 0–15 均逐位显示 |
+| 离散量 1x100–1x105 | `DRIVER_LINK_OK`、联锁中的 4 个使能位、`RETRY_LOCKOUT` | |
+| 输入寄存器 3x1–3x17 | 动态快照 B.1 | 3x10 进口焓 = `SUCTION_ENTHALPY`，3x11 出口焓 = `LIQUID_ENTHALPY`，3x13 `EXV_TARGET` = `EXV_TARGET_PCT`；3x15/3x16 两位打包的质量码改为 `SENSOR_QUALITY_0…9`，每通道一个值 |
+| 3x100–3x102、3x110–3x111 | `SYS_MODE`、`STARTUP_STAGE`、`RUNNING_SUBSTATE`、`ERROR_REG` | `ERROR_REG` 是一个 32 位值，不拆低高 16 位 |
+| 3x200–3x205、3x207–3x223 | B.3 转速与油门点、B.4 ESC 遥测、`LIMIT_ACTIONS` | Modbus 的 `*_THROTTLE_CMD`（3x200/202/204）取自实际下发油门，对应 HMI 的 `*_THROTTLE_OUT` |
+| 保持寄存器 4x1–4x223 | 同名参数，改名见下表 | |
+| 4x205 Modbus 无帧超时 | 不纳入 HMI | HMI 有自己的超时（第 8 节） |
+| 4x220–4x223 手动油门与 EXV 开度 | `MANUAL_COMP_THROTTLE`、`MANUAL_COND_FAN_THROTTLE`、`EVAP_FAN_USER_THROTTLE`、`MANUAL_EXV_PCT` | |
+
+**改名对照**（左为 Modbus 点表符号，右为 HMI 符号，后缀 KP/KI/KD 同理）：
+
+| Modbus | HMI |
+|---|---|
+| `SH_PID_*`、`CAP_PID_*`、`COND_PID_*` | `SH_*`、`CAP_*`、`COND_*` |
+| `CAP_LOOP_PERIOD_S` | `CAP_PERIOD_S` |
+| `COMP_RPM_MAX`、`COMP_SPEED_LOOP_KP/KI/DEADBAND`、`COMP_THROTTLE_MAX_ADJUST` | `CSL_RPM_MAX`、`CSL_KP/KI/DEADBAND`、`CSL_THROTTLE_MAX_ADJUST` |
+| `FAN_RPM_MAX`、`FAN_SPEED_LOOP_KP/KI/DEADBAND`、`FAN_THROTTLE_MAX_ADJUST` | `FSL_RPM_MAX`、`FSL_KP/KI/DEADBAND`、`FSL_THROTTLE_MAX_ADJUST` |
+
+**HMI 比组态屏多出的 49 个参数**：`SH_TAU`、`SH_T_GOAL`、`SH_AGGR_MODE`、`CAP_ERROR_THRESHOLD`、`CAP_TAU`、`CAP_T_GOAL`、`CAP_AGGR_MODE`、`COND_ERROR_THRESHOLD`、`COND_DEADBAND`、`COND_TAU`、`COND_T_GOAL`、`COND_PERIOD_S`、`COND_AGGR_MODE`、`CSL_KD`、`CSL_PERIOD_S`、`FSL_KD`、`FSL_PERIOD_S`、`AGE_LIMIT_MS`、`LINK_CHECK_ENABLE`、`CURRENT_BAD_ACTION`、`HP_DELAY_S`、`DISCHARGE_PSI_BAD_DELAY_S`、`LP_DELAY_S`、`SUCTION_PSI_BAD_DELAY_S`、`LSH_DELAY_S`、`OC_DELAY_S`、`CURRENT_BAD_DELAY_S`、`LINK_LOSS_DELAY_S`、`SENSOR_STALE_DELAY_S`、`EXV_FAULT_DELAY_S`、`COMPRESSOR_FAULT_DELAY_SLOT`、`EVAP_FAN_FAULT_DELAY_SLOT`、`COND_FAN_FAULT_DELAY_SLOT`、`FLOW_FAULT_DELAY_SLOT`、`L1_LIMIT_DELAY_SLOT`、`TD_TRIP_DELAY_SLOT`、`COMP_HOLD_S`、`COMP_RPM_STABILITY_SAMPLE_S`、`RPM_VALID_MIN`、`FAN_RPM_TOL`、`FAULT_FAN_HOLD_MS`、`S1_TIMEOUT_MS`、`S2_TIMEOUT_MS`、`S3_TIMEOUT_MS`、`S4_TIMEOUT_MS`、`S5_TIMEOUT_MS`、`THERMO_HYST`、`MODULATING_THRESHOLD`、`EVAP_FAN_THERMO_OFF_KEEP`。
+
+参数页对附录 C.2 标为“重启生效”的点位，写入成功后提示“已保存，重启后生效”。组态屏原有的取值范围表（`_HR_RANGE`）在 HMI 中的去向见附录 E。
+
 ## 10. 实施与验收
 
 1. **点位清单**：固件与 PC 端按附录 A 的顺序实现。
-2. **固件**：设置 `rxbuf=512`；实现 `hmi_rx`、`hmi_tx`（含发送队列、分块）、`hmi_watchdog`；替换 `main.py` 中的 `Display()`。
+2. **固件**：设置 `read_buf_len=1024`；实现 `hmi_rx`、`hmi_tx`（含发送队列、分块）、`hmi_watchdog`；替换 `main.py` 中的 `Display()`。
 3. **PC 端**：串口收发、快照解析、命令超时、界面。
 4. **协议测试**：分段到达、粘连、CRLF、超长行、未知符号、只读、整数点位收到小数、越界、精度、关系约束、队列满、校验缺失和校验错误、批量写入（成功、中途失败、符号重复、超过 5 对、整体调整关联阈值、最长符号加最长数值的行长）、数值表示上限（刚好等于、刚好超过、nan、inf、过长数字串）。
 5. **范围测试**：设定、查询、恢复默认；最小大于最大时拒绝；当前值在新范围外时仍可设定；重启后范围保留；清单版本变化后范围被丢弃；`R *` 列出全部已设定范围，PC 重连后恢复一致，核对 `END` 的计数。
@@ -359,8 +410,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | Q6 | `aggr_mode` 的表示方式 | 已确认：界面用下拉框，1 关闭（`off`）、2 比例（`proportional`）、3 目标时间（`togoal`），默认 3，协议传 1/2/3 |
 | Q7 | PC→MCU 的写类命令加行尾校验 | 已确认：`W`、`A`、`R` 设定/清除加 `*XX`（XOR），见 7.2 |
 | Q8 | PID 参数在运行中修改是否需要重置积分项或在周期边界生效 | 待实机观察 |
-| Q17 | `LIMIT_ACTIONS` 和 `SENSOR_FAULT_REG` 的位定义 | 待从 `state.py` 补全，补全前这两个点位的位定义为空，不进入界面拆位 |
-| Q9 | 手动模式下 `SYSTEM_ENABLE=0` 时，supervisor 是否会停掉手动油门和手动 EXV | 待用户核对代码。本设计先在超时停机时清 `MANUAL_MODE_ENABLE` |
+| Q9 | 手动模式下 `SYSTEM_ENABLE=0` 时，supervisor 是否会停掉手动油门和手动 EXV | 已核对关闭（2026-11-24 复核）：`SYSTEM_ENABLE=0` 在 STARTUP、RUNNING、ALARM 都进入 STOPPING 正常停机（`Alarm/supervisor.py:719,735,755`），SAFE_STOP 下不启动（:697）。压缩机、冷凝风机、EXV 的手动覆盖要求 `MANUAL_MODE_ENABLE=1` 且 RUNNING，停机中不再套用。蒸发风机例外：RUNNING 且使能时始终读 `EVAP_FAN_USER_THROTTLE`，不受手动开关控制。见第 8 节 |
 | Q10 | 固件故障事件记录：约 16 条环形缓冲，含运行毫秒、故障位、关键值，用 `L` 命令读取；`S` 增加 `UPTIME_MS` | 待确认，暂不实现 |
 | Q11 | 噪声容错：无法识别首字符的行静默丢弃；错误回复限速（每秒最多 2 条） | 待确认，暂不实现 |
 | Q12 | `W` 成功后的 `Q` 防抖（PC 端最后一次 `OK` 后 300 ms 再发），以及支持 `Q <符号>` 单点读取 | 待确认，暂不实现 |
@@ -368,6 +418,11 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | Q14 | PC 端虚拟固件模拟器：按协议应答，可注入分段、粘包、丢帧、超时、`E BUSY` | 待确认，建议与 PC 端同时开发 |
 | Q15 | 趋势记录是否需要比 1 秒更快的高频子集 | 待实机用过后再决定 |
 | Q16 | `W` 后用全量 `Q` 刷新是否过慢，是否改为只返回被改动及其同步字段 | 待实机观察 |
+| Q17 | `LIMIT_ACTIONS` 和 `SENSOR_FAULT_REG` 的位定义 | 已补全，见附录 D |
+| Q18 | `EVAP_FAN_CMD`、`COND_FAN_CMD` 的数据来源是各自转速环的目标转速 `rpm_cmd`，由 `_throttle_to_rpm_cmd` 算出：`rpm_cmd = int(throttle_cmd / ESC_THROTTLE_MAX × ST_FAN_SPEED_MAX)`，油门为 0 时为 0。`throttle_cmd`：蒸发风机，RUNNING 且使能时取 `EVAP_FAN_USER_THROTTLE`，否则取 `supervisor_interlocks['evap_fan_throttle_cmd']`（`Evaporator/control.py:58-61`）；冷凝风机，取 `supervisor_interlocks['cond_fan_throttle_cmd']`，RUNNING 且 `MANUAL_MODE_ENABLE=1` 时改取 `MANUAL_COND_FAN_THROTTLE`，高压限载 `ACT_COND_FAN_MAX` 时强制为 `ESC_THROTTLE_MAX`（`Condenser/control.py:134-148`）。现状：`rpm_cmd` 是每 0.5 s 循环内的局部变量，没有写入 `state_data`；槽位 `ST_EVAP_FAN_SPEED_CMD`、`ST_COND_FAN_SPEED_CMD` 注释为“转速指令”，只有 Modbus 的 hr221 写过（写入的是用户油门，单位不符）。压缩机同理有 `rpm_cmd`，但 `state.py` 没有对应槽位 | 待确认：固件在两个风机模块的 `rpm_cmd` 算出后各加一行写入对应槽位，HMI 保留这两点，不再沿用 hr221 的混用；若还要显示压缩机目标转速，需新增 `COMP_RPM_CMD`（建议用模块变量 `comp_rpm_cmd`，与 `comp_throttle_out` 同类，动态清单 75 变 76）。写入前这两点显示 0，界面标注“固件未发布” |
+| Q19 | 备注，不需决定：18 个参数在现有固件下需重启才生效（附录 C.2）：`CAP_/COND_` 的 `AGGR_MODE`、`TAU`、`T_GOAL`，以及 `CSL_/FSL_` 的 `KP`、`KI`、`KD`、`PERIOD_S`、`DEADBAND`、`THROTTLE_MAX_ADJUST` | 按现状处理：不改固件，界面对这些点位在写入成功后提示“已保存，重启后生效”。以后固件补上热同步，只需把 `points.csv` 的“生效”列由 B 改为 H |
+| Q20 | 容量环和冷凝压力环：PID 的 `dt` 在构造时固定为 10 s 和 2 s（`Compressor/control.py:22`、`Condenser/control.py:23`），而环的执行间隔每次读取 `CAP_PERIOD_S`、`COND_PERIOD_S`（`Compressor/control.py:90`、`Condenser/control.py:89`）。`dt` 参与积分和微分计算（`HAL/PID_Plus.py:232,251,262`），周期改动后步长与实际间隔不符。转速环相反：执行间隔固定 0.5 s，`CSL_PERIOD_S`、`FSL_PERIOD_S` 只决定构造时的 `dt`（默认 0.5，与执行间隔一致），改动既无意义又需重启 | 待用户核对。核对前：界面对 `CAP_PERIOD_S`、`COND_PERIOD_S`、`CSL_PERIOD_S`、`FSL_PERIOD_S` 标注“不建议修改”，附录 E 不推荐应用 `CAP_PERIOD_S` 的范围；固件侧可选做法是在环里同步 `ctrl.dt = period_s` |
+| Q21 | `CSL_RPM_MAX`、`FSL_RPM_MAX` 各有两份：保存值（参数字典里的 `rpm_max`，落盘到 `config.json`）和运行值（`ST_MOTOR_SPEED_MAX`、`ST_FAN_SPEED_MAX`，转速环和 `_throttle_to_rpm_cmd` 实际读取）。写入命令会同时更新两份（6.3）；开机时 `params_store.load_config()` 经 `apply_params()` 只把保存值写进参数字典（`Board/params_store.py` 的 `apply_params`），运行值保持 `state.py` 默认的 6000 和 3000。后果：重启后 `CSL_RPM_MAX` 显示已保存值，`MOTOR_SPEED_MAX` 却是 6000，转速环按 6000 限幅 | 待用户决定。建议开机加载后立即把两个保存值同步到运行值（固件改动很小，涉及转速限值，实现 HMI 前应先修）。修复前不需要固件改动的缓解：界面并排显示保存值和运行值，不一致时标红 |
 
 ## 12. 取值范围
 
@@ -392,7 +447,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 - “写”：可通过 `W` 修改并可设定用户范围。
 - 清单顺序即传输顺序。动态清单顺序为 B.1 至 B.7，参数清单顺序为 A.1 至 A.7。
 
-### 参数清单（`Q`，共 134 个值）
+### 参数清单（`Q`，共 166 个值）
 
 #### A.1 过热度环（`control_params`，10 个）
 
@@ -442,7 +497,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | COND_T_GOAL | 5.0 | float | |
 | COND_THROTTLE_MIN | 200 | int | |
 | COND_THROTTLE_MAX | 2047 | int | |
-| COND_PERIOD_S | 2.0 | float | |
+| COND_PERIOD_S | 2.0 | float | 只改执行间隔，PID 的 `dt` 固定 2 s，见 Q20 |
 | COND_AGGR_MODE | 3 | 选择 1/2/3 | |
 
 #### A.4 压缩机转速环（`comp_speed_loop_params`，7 个）
@@ -452,8 +507,8 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | CSL_KP | 0.5 | float | |
 | CSL_KI | 0.1 | float | |
 | CSL_KD | 0.0 | float | |
-| CSL_PERIOD_S | 0.5 | float | |
-| CSL_RPM_MAX | 6000 | int | 同步 `ST_MOTOR_SPEED_MAX` |
+| CSL_PERIOD_S | 0.5 | float | 只决定 PID 的 `dt`，执行间隔固定 0.5 s，见 Q20 |
+| CSL_RPM_MAX | 6000 | int | 同步 `ST_MOTOR_SPEED_MAX`；开机加载不同步，见 Q21 |
 | CSL_DEADBAND | 200 | int | |
 | CSL_THROTTLE_MAX_ADJUST | 100 | int | |
 
@@ -464,8 +519,8 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | FSL_KP | 0.3 | float | |
 | FSL_KI | 0.05 | float | |
 | FSL_KD | 0.0 | float | |
-| FSL_PERIOD_S | 0.5 | float | |
-| FSL_RPM_MAX | 3000 | int | 同步 `ST_FAN_SPEED_MAX` |
+| FSL_PERIOD_S | 0.5 | float | 只决定 PID 的 `dt`，执行间隔固定 0.5 s，见 Q20 |
+| FSL_RPM_MAX | 3000 | int | 同步 `ST_FAN_SPEED_MAX`；开机加载不同步，见 Q21 |
 | FSL_DEADBAND | 200 | int | |
 | FSL_THROTTLE_MAX_ADJUST | 100 | int | |
 
@@ -554,7 +609,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | MANUAL_COMP_THROTTLE | manual_params | 1000 | int | |
 | MANUAL_COND_FAN_THROTTLE | manual_params | 1000 | int | |
 | MANUAL_EXV_PCT | manual_params | 30.0 | float | |
-| EVAP_FAN_USER_THROTTLE | evap_fan_user_params | 1500 | int | 同步 `ST_EVAP_FAN_SPEED_CMD` |
+| EVAP_FAN_USER_THROTTLE | evap_fan_user_params | 1500 | int | RUNNING 且使能时直接作为蒸发风机油门，不受 `MANUAL_MODE_ENABLE` 控制；不再同步 `EVAP_FAN_CMD`（Q18） |
 
 ### 动态清单（`S`，共 75 个值）
 
@@ -574,7 +629,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | CURRENT | `sensor_data[IDX_CURRENT]` | float | 整机电流，A |
 | SUBCOOLING | `subcooling` | float | 过冷度，K |
 | LIQUID_ENTHALPY | `liquid_enthalpy` | float | 液管焓，kJ/kg |
-| SENSOR_QUALITY_0 … SENSOR_QUALITY_9 | `sensor_quality[0..9]` | int | 10 个点位，0=OK，1=SUSPECT，2=BAD |
+| SENSOR_QUALITY_0 … SENSOR_QUALITY_9 | `sensor_quality[0..9]` | 枚举 | 10 个点位，0=OK，1=SUSPECT，2=BAD；通道顺序见附录 D |
 | SENSOR_FAULT_REG | `sensor_fault_reg` | 位图 | 传感器故障位图，1=正常 |
 | SENSOR_STALE_FLAG | `ST_SENSOR_FAULT` | int | 任一传感器命中哨兵 |
 
@@ -582,9 +637,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 
 | 符号 | 来源 | 类型 | 说明 |
 |---|---|---|---|
-| SYS_MODE | `sys_mode` | int | 系统模式 |
-| STARTUP_STAGE | `startup_stage` | int | 启动阶段 |
-| RUNNING_SUBSTATE | `running_substate` | int | 运行子状态 |
+| SYS_MODE | `sys_mode` | 枚举 | 系统模式，见附录 D |
+| STARTUP_STAGE | `startup_stage` | 枚举 | 启动阶段，见附录 D |
+| RUNNING_SUBSTATE | `running_substate` | 枚举 | 运行子状态，见附录 D |
 | LIMIT_ACTIONS | `limit_actions` | 位图 | 限载动作位图 |
 | RETRY_LOCKOUT | `retry_lockout` | int | 重试锁定 |
 | DRIVER_LINK_OK | `driver_link_ok` | int | 驱动链路状态 |
@@ -596,10 +651,10 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | COMP_RPM | `state_data[ST_MOTOR_SPEED]` | int | 压缩机转速，rpm |
 | COMP_THROTTLE_OUT | `comp_throttle_out` | int | 压缩机实际油门 |
 | EVAP_FAN_RPM | `state_data[ST_EVAP_FAN_RPM]` | int | 蒸发风机转速，rpm |
-| EVAP_FAN_CMD | `state_data[ST_EVAP_FAN_SPEED_CMD]` | int | 蒸发风机指令 |
+| EVAP_FAN_CMD | `Evaporator/control.py` 的 `rpm_cmd`，待写入 `state_data[ST_EVAP_FAN_SPEED_CMD]` | int | 蒸发风机转速环目标转速，rpm；固件发布前恒为 0，见 Q18 |
 | EVAP_FAN_THROTTLE_OUT | `evap_fan_throttle_out` | int | 蒸发风机实际油门 |
 | COND_FAN_RPM | `state_data[ST_COND_FAN_RPM]` | int | 冷凝风机转速，rpm |
-| COND_FAN_CMD | `state_data[ST_COND_FAN_SPEED_CMD]` | int | 冷凝风机指令 |
+| COND_FAN_CMD | `Condenser/control.py` 的 `rpm_cmd`，待写入 `state_data[ST_COND_FAN_SPEED_CMD]` | int | 冷凝风机转速环目标转速，rpm；固件发布前恒为 0，见 Q18 |
 | COND_FAN_THROTTLE_OUT | `cond_fan_throttle_out` | int | 冷凝风机实际油门 |
 | EXV_POS | `state_data[ST_VALVE_POS]` | float | EXV 当前开度，% |
 | EXV_STEPS | `state_data[ST_VALVE_POS_STEPS]` | int | EXV 当前步数 |
@@ -609,9 +664,9 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | COND_FAN_FAULT_FLAG | `state_data[ST_COND_FAN_FAULT]` | int | 冷凝风机转速异常，1=异常 |
 | COMPRESSOR_FAULT_FLAG | `state_data[ST_COMPRESSOR_FAULT]` | int | 压缩机故障事件 |
 | MOTOR_SPEED_MIN | `state_data[ST_MOTOR_SPEED_MIN]` | int | 压缩机转速下限，rpm |
-| MOTOR_SPEED_MAX | `state_data[ST_MOTOR_SPEED_MAX]` | int | 压缩机转速上限，rpm（随 `CSL_RPM_MAX`） |
+| MOTOR_SPEED_MAX | `state_data[ST_MOTOR_SPEED_MAX]` | int | 压缩机转速上限的运行值，rpm；写入 `CSL_RPM_MAX` 时同步，开机不同步，见 Q21 |
 | FAN_SPEED_MIN | `state_data[ST_FAN_SPEED_MIN]` | int | 风机转速下限，rpm |
-| FAN_SPEED_MAX | `state_data[ST_FAN_SPEED_MAX]` | int | 风机转速上限，rpm（随 `FSL_RPM_MAX`） |
+| FAN_SPEED_MAX | `state_data[ST_FAN_SPEED_MAX]` | int | 风机转速上限的运行值，rpm；写入 `FSL_RPM_MAX` 时同步，开机不同步，见 Q21 |
 | FLOW_SWITCH | `state_data[ST_FLOW_SWITCH]` | int | 流量开关（软件占位） |
 
 #### B.4 变频器遥测（16 个，只读）
@@ -642,7 +697,7 @@ MicroPython 协程是协作式的，三个协程与控制协程共用一个线�
 | 6 | HIGH_DISCHARGE_TEMP | 14 | SENSOR_STALE_FAULT |
 | 7 | OVERCURRENT_FAULT | 15 | FLOW_FAULT（预留） |
 
-位 8（原 `MODBUS_COMM_FAULT`）不在界面中显示。
+位 0–15 均在界面中逐位显示，包括位 8 `MODBUS_COMM_FAULT`；位 16–31 为保留位，不作为报警显示。
 
 #### B.6 联锁（7 个，只读，`supervisor_interlocks`）
 
@@ -659,7 +714,7 @@ COMP_ENABLE、COMP_THROTTLE_CMD、EVAP_FAN_ENABLE、EVAP_FAN_THROTTLE_CMD、COND
 
 | 清单 | 分组 | 值的个数 |
 |---|---|---|
-| 参数 `Q` | A.1 10 + A.2 13 + A.3 13 + A.4 7 + A.5 7 + A.6 79 + A.7 5 | 134 |
+| 参数 `Q` | A.1 10 + A.2 13 + A.3 13 + A.4 7 + A.5 7 + A.6 79 + A.7 5 + A.8 32 | 166 |
 | 动态 `S` | B.1 24 + B.2 6 + B.3 20 + B.4 16 + B.5 1 + B.6 7 + `SYSTEM_ENABLE` 1 | 75 |
 
 ## 13. 决策记录与修改指引
@@ -674,18 +729,19 @@ COMP_ENABLE、COMP_THROTTLE_CMD、EVAP_FAN_ENABLE、EVAP_FAN_THROTTLE_CMD、COND
 | 枚举值传输 | 整数序号，`aggr_mode` 为 1/2/3 |
 | 启动 | 允许直接下发，不需要二次确认 |
 | 手动项 | 允许直接写入，不需要二次确认 |
-| 报警位 `MODBUS_COMM_FAULT`（位 8） | 不在界面中显示 |
+| 报警位 `MODBUS_COMM_FAULT`（位 8） | 作为独立报警位逐位显示 |
 | 用户范围保存 | 沿用 `params_store`，与参数同一配置文件的独立段中 |
 | 范围变更确认 | 不需要二次确认 |
 | PC 端代码目录 | 新建 `pc_hmi/`（名称如需修改，由用户决定） |
+| PC 开发环境 | `pc_hmi/` 下已有 Python 3 虚拟环境，PySide6 和 pyserial 已安装，后续复用 |
 | 接线 | 由用户自行完成 |
 | 实机反馈（Q4、Q5） | 由用户在使用时反馈，再调整分块大小和快照频率 |
 | 停止优先 | `W SYSTEM_ENABLE 0` 可插队；PC 以快照核对，必要时重发最多 3 次 |
-| 超时时手动模式 | 同时清 `MANUAL_MODE_ENABLE`，Q9 待核对 |
+| 超时时手动模式 | 同时清 `MANUAL_MODE_ENABLE`（Q9 已核对，见第 8 节）；`EVAP_FAN_USER_THROTTLE` 不受该开关控制，但停机后不再生效 |
 | 心跳判据 | 固件只认合法命令行；PC 由界面线程“喂”标志驱动 `P` |
-| 批量写入 | 采用，最多 8 对，原子，关系约束按整体新值检查 |
+| 批量写入 | 采用，最多 5 对（修订 11 起），原子，关系约束按整体新值检查 |
 | 校验 | `W`、`A`、`R` 设定/清除加 XOR 校验 |
-| 接收缓冲 | `rxbuf=512`，单行上限 128 字节 |
+| 接收缓冲 | `read_buf_len=1024`（`pyb.UART`），单行上限 256 字节（修订 11 起） |
 | 点位清单来源 | `points.csv` 生成两端代码，握手返回版本和哈希 |
 | 快照生成 | 预分配缓冲，一次复制保证一致性，手写数字格式化 |
 | 不兼容状态 | 版本或哈希不一致时不显示数值，仅保留停止按钮 |
@@ -693,7 +749,11 @@ COMP_ENABLE、COMP_THROTTLE_CMD、EVAP_FAN_ENABLE、EVAP_FAN_THROTTLE_CMD、COND
 | 范围恢复 | `R *` 列出已设定范围，以 `R END <n>` 结束；重连按 `H`、`Q`、`R *` |
 | 发送队列 | 应答槽（4 行，专用）与数据槽（2 项）分开；`E BUSY` 只用于 `Q`、`R *` |
 | 哈希范围 | 符号、清单、类型、读写、精度、单位、枚举、位定义；其他线上格式变化升协议版本 |
-| 数值表示上限 | 浮点绝对值小于 1e8（12 字符），整数 int32（11 字符）；不是设备硬限 |
+| 数值表示上限 | 浮点绝对值小于 1e8（12 字符），整数 int32（11 字符），位图按无符号 32 位（10 字符）；不是设备硬限 |
+| 与 Modbus 的关系 | 完全独立：不共用寄存器表和超时；无 Modbus 主站时不会触发 `MODBUS_COMM_FAULT`（修订 12） |
+| 界面目标 | 功能上等价于组态屏，对应关系见 9.2（修订 12） |
+| 枚举点位 | `SYS_MODE`、`STARTUP_STAGE`、`RUNNING_SUBSTATE`、`SENSOR_QUALITY_*` 按枚举（类型 `e`）处理，取值集合见附录 D（修订 12） |
+| 取值范围的来源 | 固件不设范围表；PC 端提供“应用推荐范围”，数据来自附录 E，由用户点击后才发送（修订 12） |
 
 ### 13.2 修改指引
 
@@ -707,3 +767,189 @@ COMP_ENABLE、COMP_THROTTLE_CMD、EVAP_FAN_ENABLE、EVAP_FAN_THROTTLE_CMD、COND
 - 每个通信协程、命令分派和点位读写函数，在代码中注明对应的设计章节（如“见 PC_HMI_UART_DESIGN.md 第 7.2 节”）。
 - 涉及阻塞、分块或定时的常量，注释写明实测值和修改原因。
 - 涉及有副作用的写入（如 `HP_TARGET` 同步），注释写明同步的字段。
+
+
+## 附录 C：符号到固件 state 的映射与生效时机
+
+本附录由固件源码核对得出（`Board/state.py`、`Display_Touch/modbus_slave.py`、`Board/params_store.py`、各控制模块）。
+
+### C.1 映射规则
+
+| 符号前缀或类别 | 写入的字典（`Board/state.py`） | 键名规则 |
+|---|---|---|
+| `SH_`（过热度环，A.1） | `control_params` | `KP`→`Kp`，`KI`→`Ki`，`KD`→`Kd`，`SETPOINT`→`setpoint`，`ERROR_THRESHOLD`→`error_threshold`，`DEADBAND`→`deadband`，`MAX_DELTA`→`max_delta`，`TAU`→`tau`，`T_GOAL`→`T_goal`，`AGGR_MODE`→`aggr_mode` |
+| `CAP_`（A.2） | `compressor_control_params` | 同上，另有 `THROTTLE_MIN`→`throttle_min`，`THROTTLE_MAX`→`throttle_max`，`PERIOD_S`→`period_s` |
+| `COND_`（A.3，`COND_SETPOINT` 只读） | `cond_control_params` | 同 `CAP_` |
+| `CSL_`（A.4） | `comp_speed_loop_params` | `KP/KI/KD`，`PERIOD_S`→`period_s`，`RPM_MAX`→`rpm_max`，`DEADBAND`→`deadband`，`THROTTLE_MAX_ADJUST`→`throttle_max_adjust` |
+| `FSL_`（A.5） | `fan_speed_loop_params` | 同 `CSL_` |
+| A.6 其余符号（含 `SH_MIN`、`SH_CRIT`、`COND_FAN_*`） | `protect_params` | 键名与符号相同 |
+| `DELAY_SLOT_0…7` | `protect_params['delay_slots'][i]` | 下标 i |
+| A.7 手动项 | `manual_params`（`EVAP_FAN_USER_THROTTLE` 在 `evap_fan_user_params`） | 键名与符号相同，不持久化 |
+| `SYSTEM_ENABLE` | `state_data[ST_SYSTEM_ENABLE]` | 不持久化 |
+| `FAULT_RESET` | `fault_reset_request = True`，由 supervisor 处理后清零 | 动作 |
+
+先判断是否是 `protect_params` 的键，再按前缀处理；否则 `SH_MIN` 会被误当成过热度环的参数。
+
+**`*_AGGR_MODE` 的取值转换**：协议传 1、2、3，`state` 中保存字符串，`HAL/PID_Plus.py` 也只认字符串。固件在读写边界转换：1↔`"off"`，2↔`"proportional"`，3↔`"togoal"`。配置文件中保存的仍是字符串。
+
+### C.2 生效时机
+
+| 参数 | 生效时机 | 依据 |
+|---|---|---|
+| `SH_*`（10 个，含 `TAU`、`T_GOAL`、`AGGR_MODE`、`ERROR_THRESHOLD`） | 下一个 1 s PID 周期 | `EXV/Valve_CRTL.py` 的 `_sync_controller_params` 每周期比较并同步，不重置积分 |
+| `CAP_`、`COND_` 的 `KP/KI/KD`、`SETPOINT`、`DEADBAND`、`MAX_DELTA`、`ERROR_THRESHOLD` | 下一个环周期 | `_sync_cap_params`、`_sync_pres_params` |
+| `CAP_`、`COND_` 的 `THROTTLE_MIN/MAX`、`PERIOD_S` | 下一个环周期（每次直接读字典） | `Compressor/control.py`、`Condenser/control.py`；`PERIOD_S` 的限制见 Q20 |
+| **`CAP_`、`COND_` 的 `TAU`、`T_GOAL`、`AGGR_MODE`（6 个）** | **重启后** | 只在控制器构造时读取，没有同步函数 |
+| **`CSL_`、`FSL_` 的 `KP/KI/KD`、`PERIOD_S`、`DEADBAND`、`THROTTLE_MAX_ADJUST`（12 个）** | **重启后** | 转速环控制器在模块加载时构造，没有同步函数。`PERIOD_S` 只决定构造时的 PID `dt`，转速环的执行间隔固定为 0.5 s（`asyncio.sleep_ms(500)`），见 Q20 |
+| `CSL_RPM_MAX`、`FSL_RPM_MAX` | 写入命令发生时立即生效；**重启后回到默认值** | 写入同步 `ST_MOTOR_SPEED_MAX`、`ST_FAN_SPEED_MAX`，转速环每次读取；开机加载不做这一步（Q21） |
+| `protect_params` 的其余参数 | 下一次判断 | 抽查 `Alarm/rules.py`、`Alarm/supervisor.py`，均在判断时读字典 |
+| `MANUAL_COMP_THROTTLE`、`MANUAL_COND_FAN_THROTTLE`、`MANUAL_EXV_PCT` | 下一个设备周期；要求 `MANUAL_MODE_ENABLE=1` 且 RUNNING | 见第 8 节 |
+| `EVAP_FAN_USER_THROTTLE` | 下一个 0.5 s 周期；RUNNING 且使能时直接生效，不受 `MANUAL_MODE_ENABLE` 控制 | `Evaporator/control.py:58-61` |
+
+“重启后”共 18 个：`CAP_`、`COND_` 各 3 个，`CSL_`、`FSL_` 各 6 个。HMI 对这些点位在写入成功后提示“已保存，重启后生效”。
+`points.csv` 增加一列“生效”：`H`（热）、`B`（重启）。该列不影响线上解析，不进入清单哈希。固件补上热同步后，把对应点位改为 `H` 即可。
+
+## 附录 D：枚举与位图定义（关闭 Q17）
+
+位图点位的极性不一致，界面必须按各自规则处理：`ERROR_REG` 和 `SENSOR_FAULT_REG` 是 1=正常、0=故障；`LIMIT_ACTIONS` 是 1=动作生效。
+
+**ERROR_REG**（32 位，全部正常为 4294967295；位 16–31 保留，恒为 1）：
+
+`0:EXV_FAULT;1:COMPRESSOR_FAULT;2:EVAP_FAN_FAULT;3:COND_FAN_FAULT;4:HIGH_PRESSURE_FAULT;5:LOW_PRESSURE_FAULT;6:HIGH_DISCHARGE_TEMP;7:OVERCURRENT_FAULT;8:MODBUS_COMM_FAULT;9:LOW_SUPERHEAT_FAULT;10:CONFIG_IO_FAULT;11:SUCTION_PSI_FAULT;12:DISCHARGE_PSI_FAULT;13:CURRENT_SENSOR_FAULT;14:SENSOR_STALE_FAULT;15:FLOW_FAULT`
+
+位 8 在清单哈希中保留原名并作为独立报警位显示；位 16–31 为保留位，不作为报警显示。
+
+**SENSOR_FAULT_REG**（16 位，1=正常，全部正常为 65535；位 8–15 保留）：
+
+`0:SUCTION_T_FAULT;1:DISCHARGE_T_FAULT;2:INLET_T_FAULT;3:OUTLET_T_FAULT;4:LIQUID_T_FAULT;5:SUCTION_PSI_FAULT;6:DISCHARGE_PSI_FAULT;7:CURRENT_FAULT`
+
+**LIMIT_ACTIONS**（1=生效，来自 `state.ACT_*`）：
+
+`0:INHIBIT_UP;1:UNLOAD;2:COND_FAN_MAX;3:EXV_REDUCE;4:NORMAL_STOP;5:SAFE_STOP`
+
+| 位 | 含义 |
+|---|---|
+| 0 | 禁升速：容量环只许降不许升 |
+| 1 | 降容：强制下降到回油油门 |
+| 2 | 冷凝风机强制全速 |
+| 3 | 关小 EXV |
+| 4 | 正常停机（不锁存） |
+| 5 | 故障停机 |
+
+**枚举**（取值集合写入清单哈希）：
+
+| 点位 | 取值集合 | 含义 |
+|---|---|---|
+| `SYS_MODE` | `0|1|2|3|4|5|6|7` | 0 BOOT，1 SELF_TEST，2 SAFE_STOP，3 STARTUP，4 RUNNING，5 ALARM，6 STOPPING，7 DEGRADED |
+| `STARTUP_STAGE` | `0|1|2|3|4|5|6` | 0 未在启动（S0 锁存启动请求只占一个调度周期，该周期内即置为 1），1 S1 冷凝风机，2 S2 蒸发风机，3 S3 EXV 到位，4 S4 压缩机软启（EXV 动作后延时），5 S5 晋级判据，6 S6 进入运行 |
+| `RUNNING_SUBSTATE` | `0|1|2|3` | 0 R1 降温中，1 R2 调节，2 R3 L1 限载，3 R4 达设定压缩机停 |
+| `SENSOR_QUALITY_0…9` | `0|1|2` | 0 OK，1 SUSPECT，2 BAD |
+
+`SENSOR_QUALITY_n` 的通道顺序与 `state.IDX_*` 一致：0 吸气温度，1 排气温度，2 蒸发器入口空气温度，3 蒸发器出口空气温度，4 液管温度，5 吸气压力，6 排气压力，7 过热度，8 吸气焓，9 整机电流。
+
+## 附录 E：推荐用户范围
+
+固件不设范围表（第 12 节）。组态屏时期，Modbus 写入代码强制了两类限制，切换到 HMI 后要有地方承接：
+
+1. **取值范围**：Modbus 对每个保持寄存器按 `_HR_RANGE` 检查，越界返回 0x03 拒绝（`Display_Touch/modbus_slave.py` 的 `_write_and_apply`）。HMI 默认不拒绝，由用户用 `R` 命令设定范围。本附录给出由 `_HR_RANGE` 换算的推荐值。PC 端提供“应用推荐范围”按钮，**用户点击后**逐条发送 `R <符号> <最小> <最大>*XX`，不自动发送。
+2. **分级阈值的先后关系**（`HP`、`LP`、`I`、`TD` 四组）：Modbus 在 `_prospective_consistency_ok` 中检查。HMI 在 6.3 的关系约束中检查，约束包含这四组，并多出 `HP_TARGET`、`SH_CRIT < SH_MIN`、油门上下限等，所以这一类不靠用户范围承接。
+
+下表数值按各点位倍率由 `_HR_RANGE` 换算为工程单位（倍率已与写入代码逐项核对），默认值取自 `Board/state.py`，每一项默认值都落在范围内。共 78 项有现成范围，分三类；另有 49 项没有范围可沿用（E.3）。`MODBUS_TIMEOUT_S`（4x205）不在 HMI 点位中，未列入。
+
+### E.1 建议应用（64 项）
+
+| 符号 | 默认值 | 推荐最小 | 推荐最大 | Modbus 地址 | 说明 |
+|---|---|---|---|---|---|
+| SH_SETPOINT | 5 | 1 | 10 | 4x4 |  |
+| SH_ERROR_THRESHOLD | 2 | 0.5 | 5 | 4x5 |  |
+| SH_DEADBAND | 0.2 | 0 | 2 | 4x6 |  |
+| SH_MAX_DELTA | 8 | 1 | 100 | 4x7 |  |
+| CAP_SETPOINT | 22 | 5 | 30 | 4x19 |  |
+| CAP_DEADBAND | 0.5 | 0 | 5 | 4x20 |  |
+| CAP_THROTTLE_MIN | 48 | 48 | 2047 | 4x21 |  |
+| CAP_THROTTLE_MAX | 2047 | 48 | 2047 | 4x22 |  |
+| CAP_MAX_DELTA | 200 | 10 | 500 | 4x23 |  |
+| COND_THROTTLE_MIN | 200 | 48 | 2047 | 4x28 |  |
+| COND_THROTTLE_MAX | 2047 | 48 | 2047 | 4x29 |  |
+| COND_MAX_DELTA | 150 | 10 | 500 | 4x30 |  |
+| HP_MAX | 22 | 10 | 26 | 4x31 | 高压 L2 停机，bara；关系约束见 6.3 |
+| HP_UNLOAD | 20.5 | 10 | 26 | 4x32 | 高压 L1 降容，bara；关系约束见 6.3 |
+| HP_WARN | 19 | 10 | 26 | 4x33 | 高压 L0 告警，bara；关系约束见 6.3 |
+| HP_TARGET | 12 | 8 | 20 | 4x34 | 冷凝压力目标，同步 `COND_SETPOINT`；关系约束见 6.3 |
+| LP_MIN | 2.5 | 1 | 5 | 4x50 | 低压 L2 停机，bara；关系约束见 6.3 |
+| LP_UNLOAD | 2.8 | 1 | 5 | 4x51 | 低压 L1 降容，bara；关系约束见 6.3 |
+| LP_WARN | 3 | 1 | 5 | 4x52 | 低压 L0 告警，bara；关系约束见 6.3 |
+| LP_HYST | 0.3 | 0.1 | 1 | 4x53 | 低压恢复迟滞，bara；关系约束见 6.3 |
+| I_MAX | 45 | 10 | 50 | 4x54 | 电流 L2 停机，A；关系约束见 6.3 |
+| I_UNLOAD | 42 | 10 | 50 | 4x55 | 电流 L1 降容，A；关系约束见 6.3 |
+| I_LIMIT | 40 | 10 | 50 | 4x56 | 电流 L1 禁升速，A；关系约束见 6.3 |
+| I_WARN | 38 | 10 | 50 | 4x57 | 电流 L0 告警，A；关系约束见 6.3 |
+| TD_TRIP | 115 | 80 | 150 | 4x58 | 排气温度 L2 停机，°C；关系约束见 6.3 |
+| TD_UNLOAD | 105 | 80 | 150 | 4x59 | 排气温度 L1 降容，°C；关系约束见 6.3 |
+| TD_WARN | 95 | 80 | 150 | 4x60 | 排气温度 L0 告警，°C；关系约束见 6.3 |
+| SH_MIN | 2 | 0.5 | 5 | 4x61 | 最小过热度，L1 关小 EXV，K |
+| SH_CRIT | 1 | 0.5 | 5 | 4x62 | 临界过热度，L1 降容，K |
+| DELAY_SLOT_0 | 0 | 0 | 3600 | 4x100 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_1 | 5 | 0 | 3600 | 4x101 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_2 | 10 | 0 | 3600 | 4x102 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_3 | 30 | 0 | 3600 | 4x103 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_4 | 45 | 0 | 3600 | 4x104 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_5 | 60 | 0 | 3600 | 4x105 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_6 | 300 | 0 | 3600 | 4x106 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| DELAY_SLOT_7 | 900 | 0 | 3600 | 4x107 | 延时秒数；槽位序号点位 `*_DELAY_SLOT` 另取 0–7 |
+| EXV_START_POS | 30 | 10 | 50 | 4x120 | 启动开度，% |
+| COMP_START_THROTTLE | 1200 | 48 | 2047 | 4x121 | 启动油门 |
+| COND_FAN_START_THROTTLE | 1000 | 48 | 2047 | 4x122 | 启动油门 |
+| EVAP_FAN_START_THROTTLE | 800 | 48 | 2047 | 4x123 | 启动油门 |
+| EXV_TO_COMP_DELAY_SLOT | 1 | 0 | 7 | 4x130 | 槽号 0–7 |
+| COMP_STOP_DELAY_SLOT | 1 | 0 | 7 | 4x131 | 槽号 0–7 |
+| FAN_STOP_DELAY_SLOT | 1 | 0 | 7 | 4x132 | 槽号 0–7 |
+| COMP_START_DELAY_S | 15 | 5 | 60 | 4x150 | 模式 1 开机延时秒数 |
+| COMP_RPM_STABILITY_WINDOW_S | 10 | 5 | 30 | 4x151 | 稳定性窗口，s |
+| COMP_RPM_STABILITY_THRESHOLD | 100 | 10 | 500 | 4x152 | 窗口内转速变化阈值，rpm |
+| CSL_RPM_MAX | 6000 | 1000 | 6000 | 4x153 | 同步 `ST_MOTOR_SPEED_MAX`；开机加载不同步，见 Q21 |
+| CSL_DEADBAND | 200 | 10 | 500 | 4x156 |  |
+| CSL_THROTTLE_MAX_ADJUST | 100 | 10 | 500 | 4x157 |  |
+| FSL_RPM_MAX | 3000 | 500 | 3000 | 4x180 | 同步 `ST_FAN_SPEED_MAX`；开机加载不同步，见 Q21 |
+| FSL_DEADBAND | 200 | 10 | 500 | 4x183 |  |
+| FSL_THROTTLE_MAX_ADJUST | 100 | 10 | 500 | 4x184 |  |
+| COMP_OIL_RETURN_THROTTLE | 200 | 48 | 500 | 4x185 | 回油最低油门 |
+| UNLOAD_RATE_THROTTLE_S | 50 | 10 | 200 | 4x186 | 降容速率，油门/s |
+| MIN_ON_S | 180 | 60 | 600 | 4x200 | 压缩机最短运行时间，s |
+| MIN_OFF_S | 300 | 60 | 600 | 4x201 | 压缩机最短停机间隔，s |
+| MAX_STARTS_PER_HOUR | 6 | 1 | 10 | 4x202 | 每小时最大启动次数 |
+| RETRY_MAX | 3 | 1 | 10 | 4x203 | 窗口内最大重试次数 |
+| RETRY_WINDOW_S | 3600 | 600 | 7200 | 4x204 | 重试窗口，s |
+| MANUAL_COMP_THROTTLE | 1000 | 0 | 2047 | 4x220 |  |
+| MANUAL_COND_FAN_THROTTLE | 1000 | 0 | 2047 | 4x221 |  |
+| EVAP_FAN_USER_THROTTLE | 1500 | 0 | 2047 | 4x222 | RUNNING 且使能时直接作为蒸发风机油门，不受 `MANUAL_MODE_ENABLE` 控制；不再同步 `EVAP_FAN_CMD`（Q18） |
+| MANUAL_EXV_PCT | 30 | 0 | 100 | 4x223 |  |
+
+### E.2 沿用数值但不建议应用（14 项）
+
+PID 增益的原范围是 0–327.67，是为了不拒绝默认值而放宽的，没有保护意义。`CAP_PERIOD_S` 的范围有意义，但改动周期会使 PID 的 `dt` 与实际间隔不符（Q20），Q20 解决前不建议应用。
+
+| 符号 | 默认值 | 推荐最小 | 推荐最大 | Modbus 地址 | 说明 |
+|---|---|---|---|---|---|
+| SH_KP | 0.6 | 0 | 327.67 | 4x1 |  |
+| SH_KI | 0.12 | 0 | 327.67 | 4x2 |  |
+| SH_KD | 3 | 0 | 327.67 | 4x3 |  |
+| CAP_KP | 50 | 0 | 327.67 | 4x16 |  |
+| CAP_KI | 5 | 0 | 327.67 | 4x17 |  |
+| CAP_KD | 10 | 0 | 327.67 | 4x18 |  |
+| CAP_PERIOD_S | 10 | 5 | 60 | 4x24 | 改动会使 PID 的 `dt` 与实际间隔不符，见 Q20 |
+| COND_KP | 100 | 0 | 327.67 | 4x25 |  |
+| COND_KI | 10 | 0 | 327.67 | 4x26 |  |
+| COND_KD | 20 | 0 | 327.67 | 4x27 |  |
+| CSL_KP | 0.5 | 0 | 327.67 | 4x154 |  |
+| CSL_KI | 0.1 | 0 | 327.67 | 4x155 |  |
+| FSL_KP | 0.3 | 0 | 327.67 | 4x181 |  |
+| FSL_KI | 0.05 | 0 | 327.67 | 4x182 |  |
+
+### E.3 没有现成范围的点位（49 项）
+
+这些点位组态屏上没有对应寄存器，因此没有可沿用的范围，本附录不推荐数值，由操作者按需用 `R` 命令设定：
+
+`SH_TAU`、`SH_T_GOAL`、`SH_AGGR_MODE`、`CAP_ERROR_THRESHOLD`、`CAP_TAU`、`CAP_T_GOAL`、`CAP_AGGR_MODE`、`COND_ERROR_THRESHOLD`、`COND_DEADBAND`、`COND_TAU`、`COND_T_GOAL`、`COND_PERIOD_S`、`COND_AGGR_MODE`、`CSL_KD`、`CSL_PERIOD_S`、`FSL_KD`、`FSL_PERIOD_S`、`AGE_LIMIT_MS`、`LINK_CHECK_ENABLE`、`CURRENT_BAD_ACTION`、`HP_DELAY_S`、`DISCHARGE_PSI_BAD_DELAY_S`、`LP_DELAY_S`、`SUCTION_PSI_BAD_DELAY_S`、`LSH_DELAY_S`、`OC_DELAY_S`、`CURRENT_BAD_DELAY_S`、`LINK_LOSS_DELAY_S`、`SENSOR_STALE_DELAY_S`、`EXV_FAULT_DELAY_S`、`COMPRESSOR_FAULT_DELAY_SLOT`、`EVAP_FAN_FAULT_DELAY_SLOT`、`COND_FAN_FAULT_DELAY_SLOT`、`FLOW_FAULT_DELAY_SLOT`、`L1_LIMIT_DELAY_SLOT`、`TD_TRIP_DELAY_SLOT`、`COMP_HOLD_S`、`COMP_RPM_STABILITY_SAMPLE_S`、`RPM_VALID_MIN`、`FAN_RPM_TOL`、`FAULT_FAN_HOLD_MS`、`S1_TIMEOUT_MS`、`S2_TIMEOUT_MS`、`S3_TIMEOUT_MS`、`S4_TIMEOUT_MS`、`S5_TIMEOUT_MS`、`THERMO_HYST`、`MODULATING_THRESHOLD`、`EVAP_FAN_THERMO_OFF_KEEP`
+
+开关和枚举类点位（各 `*_ENABLE`、`*_AGGR_MODE`、`STARTUP_ADVANCE_MODE`、`*_DELAY_SLOT` 等）的取值由 6.3 的取值规则固定，不依赖用户范围。`COND_SETPOINT` 为只读镜像，不设范围。

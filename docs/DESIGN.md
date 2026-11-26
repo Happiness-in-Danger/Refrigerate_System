@@ -909,7 +909,7 @@ RUNNING_THERMO_OFF = 3  # R4: 达到设定，压缩机停
 | **控制环参数** | 容量环 Kp/Ki/Kd, `setpoint` | ✅ | ✅ | 立即（PID 同步） |
 | **启动时序参数** | `COMP_START_THROTTLE`, `EXV_START_POS` | ✅ | ✅ | 下次启动生效 |
 | **限速参数** | `ST_MOTOR_SPEED_MIN/MAX`, `ST_FAN_SPEED_MIN/MAX` | ✅ | ❌（映射 state_data，不在持久化组） | 立即（影响输出限幅） |
-| **ESC 倍率** | `ESC_TELEMETRY_CFG` | ❌（编译期常量） | ❌ | — |
+| **ESC 倍率** | `ESC_TELEMETRY_CFG` | ✅（通过 HMI A.8 组 32 个参数展开读写） | ✅ | 立即（Driver.py 每周期读取） |
 | **手动指令** | `MANUAL_COMP_THROTTLE`, `MANUAL_COND_FAN_THROTTLE`, `EVAP_FAN_USER_THROTTLE` | ✅ | ❌ | 立即（手动模式下） |
 | **软件版本** | `SW_VERSION` | ❌ 只读 | — | — |
 

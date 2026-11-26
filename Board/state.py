@@ -525,20 +525,53 @@ driver_link_ok = True   # 初值 True；由 main.py DriverLink() 协程更新
 # 按 DESIGN.md §9.2 / §7.5：erpm/temp/voltage/current 有效位 + 倍率 + 极对数
 # 无效通道写 999；ESC1/ESC2 current=False（由 ACS712-50A 统一采样）
 # ────────────────────────────────────────────────────────────
-ESC_TELEMETRY_CFG = [
-    # ESC0 压缩机：Driver.py 帧解析已将 raw 值换算为实际 V/A，此处倍率保持 1.0
-    {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
-     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 3},
-    # ESC1 蒸发风机 — 本机 current 无效
-    {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
-     "erpm_scale": 1.0, "voltage_scale": 2.1, "current_scale": 1.0, "pole_pairs": 7},
-    # ESC2 冷凝风机
-    {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
-     "erpm_scale": 1.0, "voltage_scale": 2.1, "current_scale": 1.0, "pole_pairs": 7},
-    # ESC3 备用
-    {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
-     "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 7},
-]
+def _build_esc_telemetry_params():
+    """把 ESC_TELEMETRY_CFG 展开成 HMI 可读写的一维参数字典，键值与 points.csv 对应。"""
+    cfg = [
+        # ESC0 压缩机：Driver.py 帧解析已将 raw 值换算为实际 V/A，此处倍率保持 1.0
+        {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
+         "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 3},
+        # ESC1 蒸发风机 — 本机 current 无效
+        {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
+         "erpm_scale": 1.0, "voltage_scale": 2.1, "current_scale": 1.0, "pole_pairs": 7},
+        # ESC2 冷凝风机
+        {"erpm": True,  "temp": True,  "voltage": True,  "current": False,
+         "erpm_scale": 1.0, "voltage_scale": 2.1, "current_scale": 1.0, "pole_pairs": 7},
+        # ESC3 备用
+        {"erpm": True,  "temp": True,  "voltage": True,  "current": True,
+         "erpm_scale": 1.0, "voltage_scale": 1.0, "current_scale": 1.0, "pole_pairs": 7},
+    ]
+    out = {}
+    for idx, item in enumerate(cfg):
+        prefix = f"ESC{idx}_"
+        out[prefix + "POLE_PAIRS"] = int(item["pole_pairs"])
+        out[prefix + "ERPM_SCALE"] = float(item["erpm_scale"])
+        out[prefix + "VOLTAGE_SCALE"] = float(item["voltage_scale"])
+        out[prefix + "CURRENT_SCALE"] = float(item["current_scale"])
+        out[prefix + "ERPM_ENABLE"] = 1 if item["erpm"] else 0
+        out[prefix + "TEMP_ENABLE"] = 1 if item["temp"] else 0
+        out[prefix + "VOLTAGE_ENABLE"] = 1 if item["voltage"] else 0
+        out[prefix + "CURRENT_ENABLE"] = 1 if item["current"] else 0
+    return cfg, out
+
+
+ESC_TELEMETRY_CFG, esc_telemetry_params = _build_esc_telemetry_params()
+
+
+def sync_esc_telemetry_cfg():
+    """把 esc_telemetry_params 的当前值同步回 ESC_TELEMETRY_CFG，供 Driver.py 实时使用。"""
+    for idx in range(len(ESC_TELEMETRY_CFG)):
+        cfg = ESC_TELEMETRY_CFG[idx]
+        prefix = f"ESC{idx}_"
+        cfg["pole_pairs"] = int(esc_telemetry_params[prefix + "POLE_PAIRS"])
+        cfg["erpm_scale"] = float(esc_telemetry_params[prefix + "ERPM_SCALE"])
+        cfg["voltage_scale"] = float(esc_telemetry_params[prefix + "VOLTAGE_SCALE"])
+        cfg["current_scale"] = float(esc_telemetry_params[prefix + "CURRENT_SCALE"])
+        cfg["erpm"] = bool(esc_telemetry_params[prefix + "ERPM_ENABLE"])
+        cfg["temp"] = bool(esc_telemetry_params[prefix + "TEMP_ENABLE"])
+        cfg["voltage"] = bool(esc_telemetry_params[prefix + "VOLTAGE_ENABLE"])
+        cfg["current"] = bool(esc_telemetry_params[prefix + "CURRENT_ENABLE"])
+
 
 # ESC 调速油门边界：0 仅表示 disable；运行指令有效范围为 48-2047。
 ESC_THROTTLE_MIN = 48

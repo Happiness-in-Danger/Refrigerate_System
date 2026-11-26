@@ -17,8 +17,9 @@ import adc_direct
 AD7124_spi = SPIBus(1,500_000,1,1)
 AD7124_cs = SPIDev(AD7124_spi,"PG15")
 
-#LCD
-LCD_Uart = UART(1,115200)#（测试方案）
+# HMI UART（PC 上位机，见 docs/PC_HMI_UART_DESIGN.md 第 5 节）
+# UART1: PB6(TX)/PB7(RX)；原 LCD_Uart 已移除，HMI 替代组态屏
+HMI_UART = UART(1, 115200, bits=8, parity=None, stop=1, timeout=0, read_buf_len=1024)
 
 REGS = (
     (0x0001, 'u16'),

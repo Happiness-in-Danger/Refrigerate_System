@@ -7,11 +7,11 @@ from HAL.PID_Plus import IncrementalController
 # from EXV.EXV import step,async_run,get_pwm_status
 import EXV.Valve_CRTL as exv_ctrl
 from HAL.ADC_sample import SmoothedADC
-from Display_Touch.Display import display
 import Display_Touch.modbus_slave as modbus_slave
 from Board import board
 import Board.state as state
 import Board.params_store as params_store
+import Board.hmi_uart as hmi_uart
 from Sensor.read_sensors import reads_async
 import Alarm.supervisor as supervisor
 from HAL.Driver import UartLink, get_driver_link
@@ -37,15 +37,7 @@ async def Exv():
     
 
 # ------------------------
-# Model C：display
-# ------------------------
-async def Display():
-    while True:
-        display()
-        await asyncio.sleep(1)
-
-# ------------------------
-# Model D：read sensor and check alarm
+# Model C/D：read sensor and check alarm
 # ------------------------
 async def Sensor():
     while True:
@@ -159,7 +151,9 @@ async def main():
         Evaporator(),                    # Step5a: 蒸发风机执行层
         Condenser(),                     # Step5a: 冷凝风机执行层
         Exv(),
-        Display(),
+        hmi_uart.hmi_rx(),               # PC HMI 接收
+        hmi_uart.hmi_tx(),               # PC HMI 发送
+        hmi_uart.hmi_watchdog(),         # PC HMI 超时停机
         Sensor(),
         modbus_slave.slave_loop(),
         modbus_slave.sync_loop(),
