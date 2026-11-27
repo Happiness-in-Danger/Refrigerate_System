@@ -20,7 +20,7 @@ class SPIDev:
         self.bus = bus
         self.spi = bus.spi    
         self.cs = Pin(cs_pin, Pin.OUT)
-        self.rdy= Pin(rdy_pin,Pin.IN)
+        #self.rdy= Pin(rdy_pin,Pin.IN)
     
     def is_ready(self):
         return self.rdy.value()
